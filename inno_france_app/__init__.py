@@ -1,0 +1,1 @@
+"""InnoFranceApp package."""

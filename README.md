@@ -1,117 +1,187 @@
-# InnoFrance App
+# InnoFranceApp
 
-InnoFrance is an integrated application that can convert YouTube videos or direct audio files (MP3/WAV) into Chinese dubbed versions. It completes the entire process through the following steps:
+End-to-end pipeline that turns a YouTube link into:
+- a Chinese summary text (`.txt`)
+- a Chinese multi-speaker audio (`.wav`) generated from the translated transcript
 
-1. Extract audio from YouTube (or skip this step for direct audio URLs)
-2. Use ASR service to convert audio to text
-3. Use translation agent to translate text to Chinese
-4. Use TTS service to generate Chinese dubbing
+The app orchestrates the existing MCP services:
+- `InnoFranceYTAudioExtractor` (YouTube audio download)
+- `InnoFranceASRService` (ASR + speaker diarization)
+- `InnoFranceTranslateAGENT` (translation + summary)
+- `InnoFranceVoiceGenerateAgent` (TTS voice clone)
 
-## Features
+## Workflow
 
-- Simple and easy-to-use web interface
-- Real-time processing progress display
-- Audio playback and download functionality
-- Support for multi-speaker recognition and translation
-- Support for direct MP3/WAV URL input (skip YouTube extraction)
+1. Download audio from YouTube (MP3).
+2. Transcribe with speaker diarization.
+3. Translate to Chinese with speaker tags.
+4. Summarize the Chinese transcript.
+5. Generate multi-speaker Chinese audio from the translated transcript.
 
-## System Requirements
+Summary text and final audio are saved into `InnoFrance/` with incremental `sp{n}_` naming.
 
-- Python 3.8+
-- pip package manager
-- Dependent services (see below)
+## Prerequisites
 
-## Installation
+- Python 3.10+
+- `ffmpeg` on PATH
+- LLM provider credentials for `InnoFranceTranslateAGENT`
+- Model paths for ASR and TTS services
 
-1. Clone the repository:
+Install ffmpeg on Ubuntu/Debian:
+
 ```bash
-git clone <repository-url>
+sudo apt update
+sudo apt install -y ffmpeg
+```
+
+## Install
+
+Create a venv and install this app:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r InnoFranceApp/requirements.txt
+```
+
+Install each service dependency (run once):
+
+```bash
+pip install -r InnoFranceYTAudioExtractor/requirements.txt
+pip install -r InnoFranceASRService/requirements.txt
+pip install -r InnoFranceTranslateAGENT/requirements.txt
+pip install -r InnoFranceVoiceGenerateAgent/requirements.txt
+```
+
+## Quick Start
+
+```bash
 cd InnoFranceApp
+python3 -m inno_france_app.cli \
+  --youtube-url "https://www.youtube.com/watch?v=WRvWLWfv4Ts" \
+  --provider openai \
+  --language fr \
+  --speed 1.0
 ```
 
-2. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-## Starting the Application
-
-```bash
-./start.sh
-```
-
-Or start manually:
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-After starting, visit `http://localhost:8000`
-
-## Dependent Services
-
-This application requires the following services to run properly:
-
-1. **YouTubeAudioExtractor** - Running on port 8001
-2. **ASRService** - Running on port 8002
-3. **InnoFranceTranslateAGENT** - Running on port 8003
-4. **InnoFranceVoiceGenerateAgent** - Running on port 8004
-
-You can customize service addresses through environment variables:
-- YOUTUBE_SERVICE_URL
-- ASR_SERVICE_URL
-- TRANSLATE_SERVICE_URL
-- TTS_SERVICE_URL
-
-## Usage
-
-1. Paste a YouTube video link or direct MP3/WAV URL in the input box
-2. Click the "Start Processing" button
-3. Wait for processing to complete (view real-time status in progress bar)
-4. Play or download the generated audio after processing is complete
-
-## Project Structure
-
-```
-InnoFranceApp/
-├── app/
-│   ├── main.py          # Main application file
-│   ├── templates/       # HTML templates
-│   └── static/          # Static resources (CSS, JS)
-├── temp/                # Temporary files directory
-├── requirements.txt     # Python dependencies
-├── start.sh             # Startup script
-└── README.md            # This document
-```
-
-## Development Guide
-
-### Adding New Features
-
-1. Modify `app/main.py` to add new processing logic
-2. Update `app/templates/index.html` to modify the interface
-3. Adjust `app/static/css/style.css` and `app/static/js/script.js` for styling and interaction
-
-### Customizing Service Addresses
-
-You can customize dependent service addresses by setting environment variables:
+You can also pass a direct audio URL or local audio path:
 
 ```bash
-export YOUTUBE_SERVICE_URL="http://your-youtube-service:8001"
-export ASR_SERVICE_URL="http://your-asr-service:8002"
-export TRANSLATE_SERVICE_URL="http://your-translate-service:8003"
-export TTS_SERVICE_URL="http://your-tts-service:8004"
+python3 -m inno_france_app.cli \
+  --audio-url "https://example.com/audio.mp3" \
+  --provider openai
 ```
+
+```bash
+python3 -m inno_france_app.cli \
+  --audio-path "/path/to/audio.wav" \
+  --provider openai
+```
+
+Outputs:
+- Summary: `InnoFrance/sp{n}_<video>.txt`
+- Audio: `InnoFrance/sp{n}_<video>.wav`
+- Speakers: `InnoFrance/sp{n}_<video>.speakers.json`
+- Run artifacts: `InnoFranceApp/runs/sp{n}_<video>/`
+
+## Output Artifacts
+
+Each run directory contains:
+- `audio.mp3`: downloaded audio
+- `transcript.json`: ASR result
+- `translated.txt`: translated Chinese transcript with speaker tags
+- `speakers.json`: generated speaker profile config for TTS
+
+The final summary `.txt` and audio `.wav` are stored in `InnoFrance/` with the same base name.
+The generated speaker config is also saved in `InnoFrance/` with the same base name.
+
+## Speaker Config Generation
+
+The app generates `speakers.json` based on the translated transcript:
+- speaker count is inferred from `[SPEAKERx]` tags
+- each speaker receives a distinct voice instruction
+- a short sample from each speaker is used as the design text
+
+If you want to override voices, edit `speakers.json` inside the run directory and rerun TTS with the MCP tool `clone_voice`.
+
+## Configuration
+
+Environment variables:
+
+- `INNOFRANCE_PROJECT_ROOT`: override repo root detection
+- `INNOFRANCE_OUTPUT_DIR`: default output directory (default: `<root>/InnoFrance`)
+- `INNOFRANCE_RUNS_DIR`: run artifacts directory (default: `<root>/InnoFranceApp/runs`)
+- `INNOFRANCE_PYTHON_CMD`: Python command (default: `python3`)
+- `INNOFRANCE_YT_EXTRACTOR_DIR`: path to `InnoFranceYTAudioExtractor`
+- `INNOFRANCE_ASR_DIR`: path to `InnoFranceASRService`
+- `INNOFRANCE_TRANSLATE_DIR`: path to `InnoFranceTranslateAGENT`
+- `INNOFRANCE_TTS_DIR`: path to `InnoFranceVoiceGenerateAgent`
+
+LLM provider variables are read by `InnoFranceTranslateAGENT` (e.g. `OPENAI_API_KEY`).
+
+Model configuration (used by the services):
+- `WHISPER_MODEL_PATH`, `DIARIZATION_MODEL_PATH` for ASR
+- `VOICE_DESIGN_MODEL_PATH`, `VOICE_CLONE_MODEL_PATH` for TTS
+
+## Config File
+
+The default config file is `InnoFranceApp/config.json`. You can override it:
+
+```bash
+python3 -m inno_france_app.cli --config /path/to/config.json --youtube-url "..."
+```
+
+Config structure:
+
+```json
+{
+  "output_dir": "InnoFrance",
+  "runs_dir": "InnoFranceApp/runs",
+  "services": {
+    "youtube_audio": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["-m", "app.mcp_server"],
+      "cwd": "InnoFranceYTAudioExtractor",
+      "env": {
+        "YT_COOKIES_FILE": "/path/to/cookies.txt",
+        "YT_USER_AGENT": "Mozilla/5.0 ..."
+      }
+    },
+    "asr": {
+      "transport": "sse",
+      "url": "http://127.0.0.1:8000/sse"
+    },
+    "translate": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["-m", "app.mcp_server"],
+      "cwd": "InnoFranceTranslateAGENT",
+      "env": {
+        "DEEPSEEK_API_KEY": "sk-...",
+        "DEEPSEEK_API_BASE": "https://api.deepseek.com"
+      }
+    }
+  }
+}
+```
+
+SSE usage notes:
+- For FastMCP SSE servers, use the exact SSE endpoint URL provided by the service.
+- If a service runs in a separate environment, set its `transport` to `sse` and provide `url`.
+
+YouTube 403 troubleshooting:
+- Set `YT_COOKIES_FILE` (exported from a logged-in browser) or `YT_USER_AGENT`.
+- If needed, set `YT_PROXY` for outbound access.
 
 ## Troubleshooting
 
-### Service Connection Issues
+- **`ModuleNotFoundError: mcp`**: install this app's requirements.
+- **`ffmpeg not found`**: install ffmpeg and ensure it is on PATH.
+- **TTS or ASR model errors**: confirm required model paths and GPU settings.
+- **Empty summary**: verify LLM credentials and provider settings.
 
-Ensure all dependent services are running and accessible from InnoFranceApp.
+## Notes
 
-### Audio Processing Issues
-
-Check the log files of each service for detailed error information.
-
-## License
-
-MIT License
+- The pipeline uses MCP stdio transport to run tools locally.
+- `speed` defaults to `1.0` as requested.

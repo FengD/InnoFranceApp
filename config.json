@@ -1,0 +1,34 @@
+{
+  "output_dir": "InnoFrance",
+  "runs_dir": "InnoFranceApp/runs",
+  "services": {
+    "youtube_audio": {
+      "name": "youtube-audio-extractor",
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["-m", "app.mcp_server"],
+      "cwd": "InnoFranceYTAudioExtractor"
+    },
+    "asr": {
+      "name": "asr-service",
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["-m", "app.mcp_server"],
+      "cwd": "InnoFranceASRService"
+    },
+    "translate": {
+      "name": "translation-agent",
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["-m", "app.mcp_server"],
+      "cwd": "InnoFranceTranslateAGENT"
+    },
+    "tts": {
+      "name": "voice-generate",
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["-m", "app.mcp_server"],
+      "cwd": "InnoFranceVoiceGenerateAgent"
+    }
+  }
+}
