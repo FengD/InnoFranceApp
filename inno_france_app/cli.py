@@ -19,6 +19,14 @@ from .pipeline import InnoFrancePipeline
 @click.option("--language", default="fr", show_default=True, help="ASR language code.")
 @click.option("--chunk-length", default=30, show_default=True, type=int, help="ASR chunk length.")
 @click.option("--speed", default=1.0, show_default=True, type=float, help="TTS speed.")
+@click.option("--yt-cookies-file", default=None, help="Path to a YouTube cookies.txt file.")
+@click.option(
+    "--yt-cookies-from-browser",
+    default=None,
+    help="Browser name for yt-dlp cookiesfrombrowser (e.g. chrome).",
+)
+@click.option("--yt-user-agent", default=None, help="Custom YouTube User-Agent.")
+@click.option("--yt-proxy", default=None, help="Proxy URL for YouTube extraction.")
 @click.option("--config", "config_path", default=None, help="Path to config JSON.")
 def main(
     youtube_url: Optional[str],
@@ -29,6 +37,10 @@ def main(
     language: str,
     chunk_length: int,
     speed: float,
+    yt_cookies_file: Optional[str],
+    yt_cookies_from_browser: Optional[str],
+    yt_user_agent: Optional[str],
+    yt_proxy: Optional[str],
     config_path: Optional[str],
 ) -> None:
     sources = [value for value in (youtube_url, audio_url, audio_path) if value]
@@ -49,6 +61,10 @@ def main(
             language=language,
             chunk_length=chunk_length,
             speed=speed,
+            yt_cookies_file=yt_cookies_file,
+            yt_cookies_from_browser=yt_cookies_from_browser,
+            yt_user_agent=yt_user_agent,
+            yt_proxy=yt_proxy,
         )
     )
 

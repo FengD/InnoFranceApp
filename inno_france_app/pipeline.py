@@ -41,6 +41,10 @@ class InnoFrancePipeline:
         language: str,
         chunk_length: int,
         speed: float,
+        yt_cookies_file: Optional[str] = None,
+        yt_cookies_from_browser: Optional[str] = None,
+        yt_user_agent: Optional[str] = None,
+        yt_proxy: Optional[str] = None,
     ) -> PipelineResult:
         output_dir = self.config.output_dir
         runs_dir = self.config.runs_dir
@@ -77,10 +81,16 @@ class InnoFrancePipeline:
             audio_path = _download_audio_to_run(audio_url or "", run_dir)
             base_name = _sanitize_base_name(Path(audio_path).name) or base_name
         else:
-            yt_result = await yt_client.call_tool(
-                "extract_audio_to_file",
-                {"url": youtube_url, "output_path": str(audio_path), "format": "mp3"},
-            )
+            yt_args = {
+                "url": youtube_url,
+                "output_path": str(audio_path),
+                "format": "mp3",
+                "cookies_file": yt_cookies_file,
+                "cookies_from_browser": yt_cookies_from_browser,
+                "user_agent": yt_user_agent,
+                "proxy": yt_proxy,
+            }
+            yt_result = await yt_client.call_tool("extract_audio_to_file", yt_args)
             _ensure_success(yt_result, "YouTube audio extraction failed")
 
             filename = yt_result.get("filename") or yt_result.get("file_path") or ""

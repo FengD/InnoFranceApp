@@ -173,6 +173,14 @@ SSE usage notes:
 YouTube 403 troubleshooting:
 - Set `YT_COOKIES_FILE` (exported from a logged-in browser) or `YT_USER_AGENT`.
 - If needed, set `YT_PROXY` for outbound access.
+You can also pass cookies directly via CLI:
+
+```bash
+python3 -m inno_france_app.cli \
+  --youtube-url "https://www.youtube.com/watch?v=WRvWLWfv4Ts" \
+  --yt-cookies-file "~/Downloads/cookies.txt" \
+  --provider openai
+```
 
 ## Troubleshooting
 
