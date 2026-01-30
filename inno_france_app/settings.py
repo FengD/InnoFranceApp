@@ -4,6 +4,10 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 def _find_project_root() -> Path:
     env_root = os.getenv("INNOFRANCE_PROJECT_ROOT")

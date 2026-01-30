@@ -9,12 +9,22 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .config import AppConfig
 from .mcp_clients import MCPToolClient
 from .speaker_profiles import build_speaker_configs
 from .text_utils import normalize_translation_text
+
+
+PIPELINE_STEPS = (
+    "youtube_audio",
+    "asr",
+    "translate",
+    "summary",
+    "speakers",
+    "tts",
+)
 
 
 @dataclass(frozen=True)
@@ -45,7 +55,12 @@ class InnoFrancePipeline:
         yt_cookies_from_browser: Optional[str] = None,
         yt_user_agent: Optional[str] = None,
         yt_proxy: Optional[str] = None,
+        on_progress: Optional[Callable[[str, str, str, Optional[str]], None]] = None,
     ) -> PipelineResult:
+        def _emit(step: str, status: str, message: str, detail: Optional[str] = None) -> None:
+            if on_progress:
+                on_progress(step, status, message, detail)
+
         output_dir = self.config.output_dir
         runs_dir = self.config.runs_dir
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -73,13 +88,16 @@ class InnoFrancePipeline:
         source_kind = _detect_source_kind(youtube_url, audio_url, audio_path_input)
         yt_result: dict[str, Any] = {}
 
+        _emit("youtube_audio", "running", "Preparing audio source", None)
         if source_kind == "audio_path":
             source_path = Path(audio_path_input or "").expanduser().resolve()
             audio_path = _copy_audio_to_run(source_path, run_dir)
             base_name = _sanitize_base_name(source_path.name) or base_name
+            _emit("youtube_audio", "completed", "Copied local audio", str(audio_path))
         elif source_kind == "audio_url":
             audio_path = _download_audio_to_run(audio_url or "", run_dir)
             base_name = _sanitize_base_name(Path(audio_path).name) or base_name
+            _emit("youtube_audio", "completed", "Downloaded audio from URL", str(audio_path))
         else:
             yt_args = {
                 "url": youtube_url,
@@ -100,6 +118,7 @@ class InnoFrancePipeline:
                 run_dir = _rename_run_dir(run_dir, runs_dir, run_name)
                 audio_path = run_dir / "audio.mp3"
             audio_path = _resolve_audio_path(audio_path, run_dir, yt_result)
+            _emit("youtube_audio", "completed", "YouTube audio extracted", str(audio_path))
 
         run_name = f"sp{sp_index}_{base_name}"
         if run_name != run_dir.name:
@@ -107,6 +126,7 @@ class InnoFrancePipeline:
             audio_path = run_dir / Path(audio_path).name
 
         transcript_path = run_dir / "transcript.json"
+        _emit("asr", "running", "Transcribing audio with speaker diarization", None)
         asr_result = await asr_client.call_tool(
             "transcribe_audio",
             {
@@ -122,7 +142,9 @@ class InnoFrancePipeline:
         transcript_path.write_text(
             json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        _emit("asr", "completed", "Transcription saved", str(transcript_path))
 
+        _emit("translate", "running", "Translating transcript to Chinese", None)
         translation_result = await translate_client.call_tool(
             "translate_json",
             {
@@ -137,7 +159,9 @@ class InnoFrancePipeline:
 
         translated_text_path = run_dir / "translated.txt"
         translated_text_path.write_text(translated_text, encoding="utf-8")
+        _emit("translate", "completed", "Translation saved", str(translated_text_path))
 
+        _emit("summary", "running", "Generating summary", None)
         summary_result = await translate_client.call_tool(
             "translate_text",
             {
@@ -152,7 +176,9 @@ class InnoFrancePipeline:
 
         summary_path = output_dir / f"{run_name}.txt"
         summary_path.write_text(summary_text, encoding="utf-8")
+        _emit("summary", "completed", "Summary saved", str(summary_path))
 
+        _emit("speakers", "running", "Building speaker configs", None)
         speakers = build_speaker_configs(translated_text)
         speakers_path = run_dir / "speakers.json"
         speakers_path.write_text(
@@ -162,7 +188,9 @@ class InnoFrancePipeline:
         speakers_output_path.write_text(
             json.dumps(speakers, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        _emit("speakers", "completed", "Speaker configs saved", str(speakers_path))
 
+        _emit("tts", "running", "Generating multi-speaker audio", None)
         tts_text = normalize_translation_text(translated_text)
         audio_output_path = output_dir / f"{run_name}.wav"
         tts_result = await tts_client.call_tool(
@@ -175,6 +203,7 @@ class InnoFrancePipeline:
             },
         )
         _ensure_success(tts_result, "Voice generation failed")
+        _emit("tts", "completed", "Audio generated", str(audio_output_path))
 
         return PipelineResult(
             summary_path=summary_path,
