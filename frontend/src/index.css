@@ -12,6 +12,19 @@
   font-family: "DM Sans", system-ui, sans-serif;
 }
 
+.theme-light {
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --border: #e2e8f0;
+  --text: #0f172a;
+  --text-muted: #64748b;
+  --accent: #4f46e5;
+  --accent-hover: #6366f1;
+  --success: #16a34a;
+  --warning: #ca8a04;
+  --error: #dc2626;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -59,6 +72,12 @@ a:hover {
   margin-bottom: 1.5rem;
   padding-bottom: 1rem;
   border-bottom: 1px solid var(--border);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .header h1 {
@@ -351,6 +370,29 @@ a:hover {
   border-radius: 4px;
   font-size: 0.75rem;
   overflow-x: auto;
+}
+
+.job-step-detail::-webkit-scrollbar {
+  height: 8px;
+}
+
+.job-step-detail::-webkit-scrollbar-track {
+  background: var(--bg);
+  border-radius: 999px;
+}
+
+.job-step-detail::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+
+.job-step-detail::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+.job-step-detail {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) var(--bg);
 }
 
 .job-step-textarea {

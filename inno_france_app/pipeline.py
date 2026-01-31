@@ -95,11 +95,21 @@ class InnoFrancePipeline:
             source_path = Path(audio_path_input or "").expanduser().resolve()
             audio_path = _copy_audio_to_run(source_path, run_dir)
             base_name = _sanitize_base_name(source_path.name) or base_name
-            _emit("youtube_audio", "completed", "Copied local audio", str(audio_path))
+            _emit(
+                "youtube_audio",
+                "completed",
+                "Copied local audio",
+                _relative_to_runs(audio_path, runs_dir),
+            )
         elif source_kind == "audio_url":
             audio_path = _download_audio_to_run(audio_url or "", run_dir)
             base_name = _sanitize_base_name(Path(audio_path).name) or base_name
-            _emit("youtube_audio", "completed", "Downloaded audio from URL", str(audio_path))
+            _emit(
+                "youtube_audio",
+                "completed",
+                "Downloaded audio from URL",
+                _relative_to_runs(audio_path, runs_dir),
+            )
         else:
             yt_args = {
                 "url": youtube_url,
@@ -120,7 +130,12 @@ class InnoFrancePipeline:
                 run_dir = _rename_run_dir(run_dir, runs_dir, run_name)
                 audio_path = run_dir / "audio.mp3"
             audio_path = _resolve_audio_path(audio_path, run_dir, yt_result)
-            _emit("youtube_audio", "completed", "YouTube audio extracted", str(audio_path))
+            _emit(
+                "youtube_audio",
+                "completed",
+                "YouTube audio extracted",
+                _relative_to_runs(audio_path, runs_dir),
+            )
 
         run_name = f"sp{sp_index}_{base_name}_{stamp}"
         if run_name != run_dir.name:
@@ -144,7 +159,12 @@ class InnoFrancePipeline:
         transcript_path.write_text(
             json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        _emit("asr", "completed", "Transcription saved", str(transcript_path))
+        _emit(
+            "asr",
+            "completed",
+            "Transcription saved",
+            _relative_to_runs(transcript_path, runs_dir),
+        )
 
         _emit("translate", "running", "Translating transcript to Chinese", None)
         translation_result = await translate_client.call_tool(
@@ -161,7 +181,12 @@ class InnoFrancePipeline:
 
         translated_text_path = run_dir / "translated.txt"
         translated_text_path.write_text(translated_text, encoding="utf-8")
-        _emit("translate", "completed", "Translation saved", str(translated_text_path))
+        _emit(
+            "translate",
+            "completed",
+            "Translation saved",
+            _relative_to_runs(translated_text_path, runs_dir),
+        )
 
         _emit("summary", "running", "Generating summary", None)
         summary_result = await translate_client.call_tool(
@@ -178,7 +203,12 @@ class InnoFrancePipeline:
 
         summary_path = run_dir / "summary.txt"
         summary_path.write_text(summary_text, encoding="utf-8")
-        _emit("summary", "completed", "Summary saved", str(summary_path))
+        _emit(
+            "summary",
+            "completed",
+            "Summary saved",
+            _relative_to_runs(summary_path, runs_dir),
+        )
 
         speaker_count = _count_speakers(translated_text)
         speakers: list[dict[str, Any]]
@@ -201,7 +231,12 @@ class InnoFrancePipeline:
         speakers_path.write_text(
             json.dumps(speakers, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        _emit("speakers", "completed", "Speaker configs saved", str(speakers_path))
+        _emit(
+            "speakers",
+            "completed",
+            "Speaker configs saved",
+            _relative_to_runs(speakers_path, runs_dir),
+        )
 
         _emit("tts", "running", "Generating multi-speaker audio", None)
         tts_text = normalize_translation_text(translated_text)
@@ -216,7 +251,12 @@ class InnoFrancePipeline:
             },
         )
         _ensure_success(tts_result, "Voice generation failed")
-        _emit("tts", "completed", "Audio generated", str(audio_output_path))
+        _emit(
+            "tts",
+            "completed",
+            "Audio generated",
+            _relative_to_runs(audio_output_path, runs_dir),
+        )
 
         return PipelineResult(
             summary_path=summary_path,
@@ -367,6 +407,17 @@ def _download_audio_to_run(url: str, run_dir: Path) -> Path:
         with open(target, "wb") as f:
             shutil.copyfileobj(response, f)
     return target
+
+
+def _relative_to_runs(path: Path, runs_dir: Path) -> str:
+    try:
+        resolved = path.resolve()
+        base = runs_dir.resolve()
+        if resolved.is_relative_to(base):
+            return str(resolved.relative_to(base))
+    except ValueError:
+        pass
+    return path.name
 
 
 def _count_speakers(translated_text: str) -> int:

@@ -20,6 +20,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(true);
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
 
   const refreshJobs = useCallback(async () => {
     try {
@@ -68,6 +69,18 @@ function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem("innofrance-theme");
+    if (stored === "light" || stored === "dark") {
+      setTheme(stored);
+    }
+  }, []);
+
+  useEffect(() => {
+    document.body.classList.toggle("theme-light", theme === "light");
+    window.localStorage.setItem("innofrance-theme", theme);
+  }, [theme]);
 
   useEffect(() => {
     if (jobs.every((job) => job.status === "completed" || job.status === "failed")) {
@@ -181,14 +194,25 @@ function App() {
     <div className="app">
       <header className="header">
         <h1>InnoFrance Pipeline</h1>
-        <button
-          type="button"
-          className="btn btn-ghost"
-          onClick={() => setSettingsOpen((o) => !o)}
-          aria-expanded={settingsOpen}
-        >
-          Settings
-        </button>
+        <div className="header-actions">
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() =>
+              setTheme((prev) => (prev === "dark" ? "light" : "dark"))
+            }
+          >
+            {theme === "dark" ? "Light mode" : "Dark mode"}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => setSettingsOpen((o) => !o)}
+            aria-expanded={settingsOpen}
+          >
+            Settings
+          </button>
+        </div>
       </header>
 
       {settingsOpen && settings && (
