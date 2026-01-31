@@ -66,3 +66,7 @@ class SpeakersSubmitRequest(BaseModel):
 
 class SummaryUpdateRequest(BaseModel):
     text: str
+
+
+class TranslationUpdateRequest(BaseModel):
+    text: str

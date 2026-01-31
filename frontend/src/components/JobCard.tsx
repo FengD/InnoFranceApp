@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import {
   downloadUrl,
   generateSummaryAudio,
+  getJobTranslation,
   getJobSummary,
   mergeFinalAudio,
   previewAudioUrl,
   submitSpeakers,
+  updateJobTranslation,
   updateJobSummary,
 } from "../api";
 import type { PipelineJob } from "../types";
@@ -34,6 +36,12 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
   const [summarySaving, setSummarySaving] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [summaryDirty, setSummaryDirty] = useState(false);
+  const [previewTranslation, setPreviewTranslation] = useState(false);
+  const [translationText, setTranslationText] = useState("");
+  const [translationLoading, setTranslationLoading] = useState(false);
+  const [translationSaving, setTranslationSaving] = useState(false);
+  const [translationError, setTranslationError] = useState<string | null>(null);
+  const [translationDirty, setTranslationDirty] = useState(false);
   const [speakerJson, setSpeakerJson] = useState("");
   const [speakerSubmitting, setSpeakerSubmitting] = useState(false);
   const [speakerError, setSpeakerError] = useState<string | null>(null);
@@ -80,6 +88,8 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
   const waitingSpeakers =
     stepMap.get("speakers")?.status === "waiting" ||
     (job.speaker_required && !job.speaker_submitted);
+  const canEditTranslation =
+    job.speaker_required && stepMap.get("translate")?.status === "completed";
 
   useEffect(() => {
     if (!previewSummary || !job.job_id) {
@@ -98,6 +108,25 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
       .finally(() => setSummaryLoading(false));
   }, [previewSummary, job.job_id]);
 
+  useEffect(() => {
+    if (!previewTranslation || !job.job_id) {
+      return;
+    }
+    setTranslationLoading(true);
+    setTranslationError(null);
+    getJobTranslation(job.job_id)
+      .then((text) => {
+        setTranslationText(text);
+        setTranslationDirty(false);
+      })
+      .catch((err) => {
+        setTranslationError(
+          err instanceof Error ? err.message : "Failed to load translation"
+        );
+      })
+      .finally(() => setTranslationLoading(false));
+  }, [previewTranslation, job.job_id]);
+
   const handleSummarySave = async () => {
     setSummarySaving(true);
     setSummaryError(null);
@@ -109,6 +138,22 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
       setSummaryError(err instanceof Error ? err.message : "Failed to save summary");
     } finally {
       setSummarySaving(false);
+    }
+  };
+
+  const handleTranslationSave = async () => {
+    setTranslationSaving(true);
+    setTranslationError(null);
+    try {
+      await updateJobTranslation(job.job_id, translationText);
+      setTranslationDirty(false);
+      onRefresh();
+    } catch (err) {
+      setTranslationError(
+        err instanceof Error ? err.message : "Failed to save translation"
+      );
+    } finally {
+      setTranslationSaving(false);
     }
   };
 
@@ -255,6 +300,52 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
               <span className="job-step-message">
                 Paste speaker JSON to continue voice synthesis.
               </span>
+              {canEditTranslation && (
+                <div className="job-translation">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setPreviewTranslation((v) => !v)}
+                  >
+                    {previewTranslation
+                      ? "Hide translation"
+                      : "Preview translation"}
+                  </button>
+                  {previewTranslation && (
+                    <div className="artifact-preview">
+                      {translationLoading ? (
+                        <p className="muted">Loading translation…</p>
+                      ) : (
+                        <>
+                          <textarea
+                            className="preview-textarea"
+                            value={translationText}
+                            onChange={(e) => {
+                              setTranslationText(e.target.value);
+                              setTranslationDirty(true);
+                            }}
+                          />
+                          <div className="artifact-actions">
+                            <button
+                              type="button"
+                              className="btn btn-primary btn-sm"
+                              onClick={handleTranslationSave}
+                              disabled={translationSaving || !translationDirty}
+                            >
+                              {translationSaving
+                                ? "Saving…"
+                                : "Save translation"}
+                            </button>
+                            {translationError && (
+                              <span className="muted">{translationError}</span>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
               <textarea
                 className="job-step-textarea"
                 value={speakerJson}

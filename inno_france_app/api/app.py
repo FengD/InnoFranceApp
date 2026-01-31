@@ -25,6 +25,7 @@ from .schemas import (
     SettingsUpdate,
     StepEvent,
     SummaryUpdateRequest,
+    TranslationUpdateRequest,
 )
 
 
@@ -88,6 +89,14 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         if not summary_path.exists():
             raise HTTPException(status_code=404, detail="Summary not found")
         return summary_path, summary_path.read_text(encoding="utf-8")
+
+    def _translated_paths(job) -> tuple[Path, str]:
+        if not job.result or not job.result.get("translated_path"):
+            raise HTTPException(status_code=400, detail="Translation not available for this job")
+        translated_path = Path(job.result["translated_path"])
+        if not translated_path.exists():
+            raise HTTPException(status_code=404, detail="Translation not found")
+        return translated_path, translated_path.read_text(encoding="utf-8")
 
     def _resolve_asset_path(filename: str) -> Path:
         assets_dir = config.settings.project_root / "InnoFranceApp" / "assets"
@@ -235,6 +244,20 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
                 summary_url = uploaded.url
         if summary_url is not None:
             queue.update_job_result(job_id, {"summary_url": summary_url})
+        queue.save_state()
+        return PipelineJobResponse(**job.to_response())
+
+    @app.get("/api/pipeline/jobs/{job_id}/translated")
+    def get_translated(job_id: str):
+        job = _get_job_or_404(job_id)
+        _, translated_text = _translated_paths(job)
+        return PlainTextResponse(translated_text)
+
+    @app.patch("/api/pipeline/jobs/{job_id}/translated", response_model=PipelineJobResponse)
+    def update_translated(job_id: str, body: TranslationUpdateRequest) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id)
+        translated_path, _ = _translated_paths(job)
+        translated_path.write_text(body.text, encoding="utf-8")
         queue.save_state()
         return PipelineJobResponse(**job.to_response())
 

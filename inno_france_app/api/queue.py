@@ -242,12 +242,16 @@ class PipelineQueue:
                 if uploaded:
                     audio_url = uploaded.url
             job.result = {
+                "translated_path": str(result.translated_text_path),
                 "summary_path": str(result.summary_path),
                 "audio_path": str(result.audio_path),
                 "run_dir": str(result.run_dir),
                 "speakers_path": str(result.speakers_path),
                 "summary_name": result.summary_path.name,
                 "audio_name": result.audio_path.name,
+                "translated_relative": str(result.translated_text_path.resolve().relative_to(runs_dir))
+                if result.translated_text_path.resolve().is_relative_to(runs_dir)
+                else result.translated_text_path.name,
                 "summary_relative": str(result.summary_path.resolve().relative_to(runs_dir))
                 if result.summary_path.resolve().is_relative_to(runs_dir)
                 else result.summary_path.name,

@@ -181,12 +181,16 @@ class InnoFrancePipeline:
 
         translated_text_path = run_dir / "translated.txt"
         translated_text_path.write_text(translated_text, encoding="utf-8")
-        _emit(
-            "translate",
-            "completed",
-            "Translation saved",
-            _relative_to_runs(translated_text_path, runs_dir),
+        speaker_tags = _extract_speaker_tags(translated_text)
+        speaker_count = len(speaker_tags) if speaker_tags else 1
+        tag_list = ", ".join(speaker_tags) if speaker_tags else "SPEAKER0"
+        detail = "\n".join(
+            [
+                f"speakers: {speaker_count} ({tag_list})",
+                f"file: {_relative_to_runs(translated_text_path, runs_dir)}",
+            ]
         )
+        _emit("translate", "completed", "Translation saved", detail)
 
         _emit("summary", "running", "Generating summary", None)
         summary_result = await translate_client.call_tool(
@@ -425,6 +429,20 @@ def _count_speakers(translated_text: str) -> int:
     if not speakers:
         return 1
     return len(speakers)
+
+
+def _extract_speaker_tags(translated_text: str) -> list[str]:
+    speakers = parse_speaker_lines(translated_text)
+    tags = list(speakers.keys())
+    tags.sort(key=_speaker_sort_key)
+    return tags
+
+
+def _speaker_sort_key(tag: str) -> int:
+    match = re.search(r"SPEAKER(\d+)", tag)
+    if match:
+        return int(match.group(1))
+    return 0
 
 
 def _parse_speaker_configs(payload: str, project_root: Path) -> list[dict[str, Any]]:

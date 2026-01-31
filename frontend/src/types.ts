@@ -7,12 +7,14 @@ export interface StepEvent {
 }
 
 export interface PipelineResult {
+  translated_path?: string;
   summary_path: string;
   audio_path: string;
   run_dir: string;
   speakers_path?: string;
   summary_name: string;
   audio_name: string;
+  translated_relative?: string;
   summary_relative: string;
   audio_relative: string;
   speakers_relative?: string;
