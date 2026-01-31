@@ -184,13 +184,13 @@ class InnoFrancePipeline:
         speaker_tags = _extract_speaker_tags(translated_text)
         speaker_count = len(speaker_tags) if speaker_tags else 1
         tag_list = ", ".join(speaker_tags) if speaker_tags else "SPEAKER0"
-        detail = "\n".join(
-            [
-                f"speakers: {speaker_count} ({tag_list})",
-                f"file: {_relative_to_runs(translated_text_path, runs_dir)}",
-            ]
+        detail = f"file: {_relative_to_runs(translated_text_path, runs_dir)}"
+        _emit(
+            "translate",
+            "completed",
+            f"Translation saved (speakers: {speaker_count} | {tag_list})",
+            detail,
         )
-        _emit("translate", "completed", "Translation saved", detail)
 
         _emit("summary", "running", "Generating summary", None)
         summary_result = await translate_client.call_tool(
@@ -219,13 +219,16 @@ class InnoFrancePipeline:
         if manual_speakers:
             if speaker_future is None:
                 raise RuntimeError("Manual speakers enabled but no input channel provided")
+            tag_list = ", ".join(_extract_speaker_tags(translated_text)) or "SPEAKER0"
             _emit(
                 "speakers",
                 "waiting",
                 "Awaiting manual speaker JSON",
-                f"{speaker_count} speakers detected",
+                f"{speaker_count} speakers detected: {tag_list}",
             )
             speakers_json = await speaker_future
+            if translated_text_path.exists():
+                translated_text = translated_text_path.read_text(encoding="utf-8").strip()
             speakers = _parse_speaker_configs(speakers_json, self.config.settings.project_root)
             _emit("speakers", "running", "Using provided speaker configs", None)
         else:

@@ -89,7 +89,10 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
     stepMap.get("speakers")?.status === "waiting" ||
     (job.speaker_required && !job.speaker_submitted);
   const canEditTranslation =
-    job.speaker_required && stepMap.get("translate")?.status === "completed";
+    job.speaker_required &&
+    (stepMap.get("translate")?.status === "completed" ||
+      Boolean(result?.translated_path) ||
+      Boolean(result?.translated_relative));
 
   useEffect(() => {
     if (!previewSummary || !job.job_id) {
@@ -288,7 +291,9 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
                   <span className="job-step-message">{step.message}</span>
                 )}
                 {step?.detail && (
-                  <pre className="job-step-detail">{step.detail}</pre>
+                  <pre className="job-step-detail">
+                    {stripRunsPrefix(step.detail)}
+                  </pre>
                 )}
               </div>
             );
@@ -555,4 +560,21 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
       )}
     </div>
   );
+}
+
+function stripRunsPrefix(detail: string): string {
+  return detail
+    .split("\n")
+    .map((line) => {
+      const unix = line.indexOf("/runs/");
+      if (unix !== -1) {
+        return line.slice(unix + "/runs/".length);
+      }
+      const win = line.indexOf("\\runs\\");
+      if (win !== -1) {
+        return line.slice(win + "\\runs\\".length);
+      }
+      return line;
+    })
+    .join("\n");
 }

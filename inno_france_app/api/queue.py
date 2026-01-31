@@ -101,6 +101,7 @@ class PipelineQueue:
         max_concurrent: int = 1,
         state_path: Optional[Path] = None,
         s3_client: Optional[S3Client] = None,
+        runs_dir: Optional[Path] = None,
     ) -> None:
         self._parallel_enabled = parallel_enabled
         self._max_concurrent = max(1, min(3, max_concurrent))
@@ -109,6 +110,7 @@ class PipelineQueue:
         self._lock = asyncio.Lock()
         self._state_path = state_path
         self._s3_client = s3_client
+        self._runs_dir = runs_dir
         self._load_state()
 
     @property
@@ -155,6 +157,23 @@ class PipelineQueue:
                 job = self._jobs.get(job_id)
                 if job:
                     job.steps.append(ev)
+                    if (
+                        step == "translate"
+                        and status == "completed"
+                        and detail
+                        and self._runs_dir
+                    ):
+                        rel_path = _extract_detail_path(detail)
+                        if rel_path:
+                            translated_path = (self._runs_dir / rel_path).resolve()
+                            job.result = job.result or {}
+                            job.result["translated_path"] = str(translated_path)
+                            try:
+                                job.result["translated_relative"] = str(
+                                    translated_path.relative_to(self._runs_dir.resolve())
+                                )
+                            except ValueError:
+                                job.result["translated_relative"] = translated_path.name
                     self._save_state()
                 try:
                     progress_queue.put_nowait(ev)
@@ -360,3 +379,10 @@ def _parse_datetime(value: Any) -> Optional[datetime]:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
     except ValueError:
         return None
+
+
+def _extract_detail_path(detail: str) -> Optional[str]:
+    for line in detail.splitlines():
+        if line.strip().lower().startswith("file:"):
+            return line.split(":", 1)[1].strip()
+    return None

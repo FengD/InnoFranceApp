@@ -50,6 +50,7 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         max_concurrent=1,
         state_path=config.runs_dir / "pipeline_state.json",
         s3_client=s3_client,
+        runs_dir=config.runs_dir,
     )
 
     def _allowed_path(relative_path: str) -> Path:
@@ -92,11 +93,28 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
 
     def _translated_paths(job) -> tuple[Path, str]:
         if not job.result or not job.result.get("translated_path"):
-            raise HTTPException(status_code=400, detail="Translation not available for this job")
-        translated_path = Path(job.result["translated_path"])
+            translated_path = _find_translated_from_steps(job)
+            if not translated_path:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Translation not available for this job",
+                )
+        else:
+            translated_path = Path(job.result["translated_path"])
         if not translated_path.exists():
             raise HTTPException(status_code=404, detail="Translation not found")
         return translated_path, translated_path.read_text(encoding="utf-8")
+
+    def _find_translated_from_steps(job) -> Optional[Path]:
+        for step in reversed(job.steps):
+            if step.step == "translate" and step.detail:
+                for line in step.detail.splitlines():
+                    if line.strip().lower().startswith("file:"):
+                        rel = line.split(":", 1)[1].strip()
+                        candidate = (config.runs_dir / rel).resolve()
+                        if candidate.exists():
+                            return candidate
+        return None
 
     def _resolve_asset_path(filename: str) -> Path:
         assets_dir = config.settings.project_root / "InnoFranceApp" / "assets"
