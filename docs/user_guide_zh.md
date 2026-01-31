@@ -83,17 +83,28 @@ InnoFranceApp 是一个端到端音频处理管线工具，支持：
 
 如果选择了手动 Speaker JSON，这里会出现等待输入的步骤。
 
+翻译完成后会显示检测到的 **speaker tags 列表**，便于填写 speaker JSON。
+
 ---
 
 ## 5. 历史记录（History）
 
 历史记录显示已完成/失败的任务。
 
+### 5.0 记录删除
+
+- **Delete**：仅删除这条历史记录（不删除本地与 S3 文件）
+
 ### 5.1 Summary 操作
 
 - **Preview**：加载摘要文本
 - **编辑**：可直接修改并保存
 - **Generate summary audio**：用固定 voice prompt 生成摘要音频
+
+### 5.1.1 Translation 操作（仅手动 Speaker）
+
+- **Preview translation**：加载翻译后的文本
+- **编辑并保存**：更新翻译文本，后续 TTS 会使用更新后的内容
 
 ### 5.2 Audio 操作
 
@@ -126,6 +137,10 @@ InnoFranceApp 是一个端到端音频处理管线工具，支持：
 ### 6.3 多语言扩展
 
 前端已扩展多语言选项，后端可继续补充识别与翻译支持。
+
+### 6.4 主题切换
+
+右上角可切换 **Dark / Light** 两种界面主题。
 
 ---
 

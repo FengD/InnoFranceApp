@@ -83,17 +83,28 @@ Click **Show details** to view step-by-step progress:
 
 If manual speakers are enabled, this panel shows the waiting input.
 
+After translation completes, the UI shows detected **speaker tags** to help avoid mistakes.
+
 ---
 
 ## 5. History
 
 History lists completed/failed jobs.
 
+### 5.0 Delete record
+
+- **Delete**: removes the history record only (does not delete local/S3 files)
+
 ### 5.1 Summary actions
 
 - **Preview**: load summary text
 - **Edit**: update and save summary
 - **Generate summary audio**: synthesize summary audio
+
+### 5.1.1 Translation actions (manual speakers only)
+
+- **Preview translation**: load translated text
+- **Edit & save**: update translation; TTS uses the latest text
 
 ### 5.2 Audio actions
 
@@ -126,6 +137,10 @@ When S3 is configured, generated assets are uploaded and can be opened from UI.
 ### 6.3 Language expansion
 
 The UI exposes multiple languages; backend support can be extended further.
+
+### 6.4 Theme toggle
+
+Use the header toggle to switch between **Dark** and **Light** mode.
 
 ---
 

@@ -74,14 +74,14 @@ InnoFranceApp/
 
 ## Workflow (Pipeline Steps)
 
-1. **Audio source** — Download from YouTube (MP3), copy local file, or fetch from audio URL.
+1. **Audio source** — Download from YouTube (MP3), upload local file, or fetch from audio URL.
 2. **Transcription** — ASR with speaker diarization; output saved as `transcript.json`.
 3. **Translation** — Translate transcript to Chinese with speaker tags; `translated.txt`.
-4. **Summary** — Generate Chinese summary; final summary `.txt` in output dir.
+4. **Summary** — Generate Chinese summary; `summary.txt` in run directory.
 5. **Speakers** — Build speaker configs from translated text; `speakers.json`.
-6. **TTS** — Generate multi-speaker Chinese audio; final `.wav` in output dir.
+6. **TTS** — Generate multi-speaker Chinese audio; `audio.wav` in run directory.
 
-Outputs use incremental naming: `sp{n}_<base>.txt`, `sp{n}_<base>.wav`, etc.
+Run directories use timestamp suffixes: `sp{n}_<base>_<yyyymmddhhmmss>`.
 
 ## Prerequisites
 
@@ -175,10 +175,12 @@ npm run dev
 
 3. Open http://localhost:5173. The frontend proxies `/api` to the backend (see `frontend/vite.config.ts`).
 
-- **New pipeline**: Choose source (YouTube URL, audio URL, or local path), set provider/language/speed, then **Start pipeline**. Up to three pipelines can be queued or running; extra submissions are rejected until a slot is free.
+- **New pipeline**: Choose source (YouTube URL, audio URL, or local upload), set provider/language/speed, then **Start pipeline**. Up to three pipelines can be queued or running; extra submissions are rejected until a slot is free.
+- **Manual speakers**: If enabled, the pipeline pauses after translation and waits for your speaker JSON. Translation text can be previewed/edited before submitting speakers.
 - **Settings**: Toggle **Allow parallel execution** and set **Max concurrent pipelines** (1–3). When parallel is off, only one pipeline runs at a time; others wait.
 - **Progress**: Each job shows status (Queued / Running / Completed / Failed), a step progress bar, and a **Show details** toggle for step-by-step logs.
 - **Completed jobs**: Use **Download** for summary `.txt` and audio `.wav`, and **Preview** to view text or play audio in the browser.
+- **Theme**: Use the header toggle to switch between dark and light mode.
 
 ## API Overview
 
@@ -187,9 +189,13 @@ npm run dev
 | GET | `/api/settings` | Get parallel flag and max concurrent |
 | PATCH | `/api/settings` | Update `parallel_enabled`, `max_concurrent` (JSON body) |
 | POST | `/api/pipeline/start` | Start a pipeline (JSON body: `youtube_url` or `audio_url` or `audio_path`, plus `provider`, `language`, etc.) |
+| POST | `/api/uploads/audio` | Upload local audio and return `audio_path` |
 | GET | `/api/pipeline/jobs` | List all jobs |
 | GET | `/api/pipeline/jobs/{job_id}` | Get job status and result |
+| DELETE | `/api/pipeline/jobs/{job_id}` | Delete a job record (metadata only) |
 | GET | `/api/pipeline/jobs/{job_id}/stream` | SSE stream of step progress events |
+| GET | `/api/pipeline/jobs/{job_id}/translated` | Preview translated text |
+| PATCH | `/api/pipeline/jobs/{job_id}/translated` | Update translated text |
 | GET | `/api/artifacts/download?path=...` | Download file (path relative to output or runs dir) |
 | GET | `/api/artifacts/preview/summary?path=...` | Preview summary text |
 | GET | `/api/artifacts/preview/audio?path=...` | Preview audio (stream) |
