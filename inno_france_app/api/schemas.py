@@ -11,7 +11,7 @@ class PipelineStartRequest(BaseModel):
     audio_url: Optional[str] = None
     audio_path: Optional[str] = None
     provider: str = "openai"
-    model_name: Optional[str] = None
+    model_name: str
     language: str = "fr"
     chunk_length: int = 30
     speed: float = 1.0
@@ -19,6 +19,7 @@ class PipelineStartRequest(BaseModel):
     yt_cookies_from_browser: Optional[str] = None
     yt_user_agent: Optional[str] = None
     yt_proxy: Optional[str] = None
+    manual_speakers: bool = False
 
 
 class StepEvent(BaseModel):
@@ -38,6 +39,8 @@ class PipelineJobResponse(BaseModel):
     error: Optional[str] = None
     steps: list[StepEvent] = Field(default_factory=list)
     result: Optional[dict[str, Any]] = None
+    speaker_required: bool = False
+    speaker_submitted: bool = False
 
 
 class PipelineListResponse(BaseModel):
@@ -55,3 +58,11 @@ class SettingsResponse(BaseModel):
 class SettingsUpdate(BaseModel):
     parallel_enabled: Optional[bool] = None
     max_concurrent: Optional[int] = None
+
+
+class SpeakersSubmitRequest(BaseModel):
+    speakers_json: str
+
+
+class SummaryUpdateRequest(BaseModel):
+    text: str

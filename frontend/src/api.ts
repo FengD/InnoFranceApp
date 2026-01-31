@@ -39,12 +39,65 @@ export async function updateSettings(body: {
   });
 }
 
-export async function listJobs(): Promise<PipelineListResponse> {
-  return request("/api/pipeline/jobs");
+export async function listJobs(
+  includeSteps = false
+): Promise<PipelineListResponse> {
+  const query = includeSteps ? "?include_steps=true" : "";
+  return request(`/api/pipeline/jobs${query}`);
 }
 
 export async function getJob(jobId: string): Promise<PipelineJob> {
   return request(`/api/pipeline/jobs/${jobId}`);
+}
+
+export async function deleteJob(jobId: string): Promise<PipelineJob> {
+  return request(`/api/pipeline/jobs/${jobId}`, {
+    method: "DELETE",
+  });
+}
+
+
+export async function submitSpeakers(
+  jobId: string,
+  speakersJson: string
+): Promise<PipelineJob> {
+  return request(`/api/pipeline/jobs/${jobId}/speakers`, {
+    method: "POST",
+    body: JSON.stringify({ speakers_json: speakersJson }),
+  });
+}
+
+export async function getJobSummary(jobId: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/pipeline/jobs/${jobId}/summary`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error((err as { detail?: string }).detail ?? "Request failed");
+  }
+  return res.text();
+}
+
+export async function updateJobSummary(
+  jobId: string,
+  text: string
+): Promise<PipelineJob> {
+  return request(`/api/pipeline/jobs/${jobId}/summary`, {
+    method: "PATCH",
+    body: JSON.stringify({ text }),
+  });
+}
+
+export async function generateSummaryAudio(
+  jobId: string
+): Promise<PipelineJob> {
+  return request(`/api/pipeline/jobs/${jobId}/summary-audio`, {
+    method: "POST",
+  });
+}
+
+export async function mergeFinalAudio(jobId: string): Promise<PipelineJob> {
+  return request(`/api/pipeline/jobs/${jobId}/merge-audio`, {
+    method: "POST",
+  });
 }
 
 export async function startPipeline(
@@ -54,6 +107,20 @@ export async function startPipeline(
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export async function uploadAudio(file: File): Promise<{ path: string }> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${API_BASE}/api/uploads/audio`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error((err as { detail?: string }).detail ?? "Upload failed");
+  }
+  return res.json() as Promise<{ path: string }>;
 }
 
 export function streamJobEvents(

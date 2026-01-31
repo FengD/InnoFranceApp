@@ -13,7 +13,6 @@ def _find_project_root() -> Path:
     env_root = os.getenv("INNOFRANCE_PROJECT_ROOT")
     if env_root:
         return Path(env_root).expanduser().resolve()
-
     current = Path(__file__).resolve()
     for parent in current.parents:
         if (parent / "InnoFranceYTAudioExtractor").exists():
@@ -31,18 +30,21 @@ class AppSettings:
     asr_dir: Path
     translate_dir: Path
     tts_dir: Path
+    s3_endpoint: str
+    s3_bucket: str
+    s3_access_key: str
+    s3_secret_key: str
+    s3_prefix: str
 
 
 def load_settings() -> AppSettings:
     project_root = _find_project_root()
     python_cmd = os.getenv("INNOFRANCE_PYTHON_CMD", "python3")
 
-    output_dir = Path(
-        os.getenv("INNOFRANCE_OUTPUT_DIR", project_root / "InnoFrance")
-    ).expanduser().resolve()
     runs_dir = Path(
         os.getenv("INNOFRANCE_RUNS_DIR", project_root / "InnoFranceApp" / "runs")
     ).expanduser().resolve()
+    output_dir = runs_dir
 
     yt_extractor_dir = Path(
         os.getenv("INNOFRANCE_YT_EXTRACTOR_DIR", project_root / "InnoFranceYTAudioExtractor")
@@ -66,4 +68,9 @@ def load_settings() -> AppSettings:
         asr_dir=asr_dir,
         translate_dir=translate_dir,
         tts_dir=tts_dir,
+        s3_endpoint=os.getenv("INNOFRANCE_S3_ENDPOINT", ""),
+        s3_bucket=os.getenv("INNOFRANCE_S3_BUCKET", ""),
+        s3_access_key=os.getenv("INNOFRANCE_S3_ACCESS_KEY", ""),
+        s3_secret_key=os.getenv("INNOFRANCE_S3_SECRET_KEY", ""),
+        s3_prefix=os.getenv("INNOFRANCE_S3_PREFIX", "inno_france"),
     )

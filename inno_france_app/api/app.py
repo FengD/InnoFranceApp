@@ -1,23 +1,30 @@
 from __future__ import annotations
 
-import asyncio
+import json
+import shutil
+import subprocess
+import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from sse_starlette.sse import EventSourceResponse
 
 from ..config import load_app_config
+from ..mcp_clients import MCPToolClient
+from ..s3 import S3Client
 from .queue import PipelineQueue
 from .schemas import (
     PipelineJobResponse,
     PipelineListResponse,
     PipelineStartRequest,
+    SpeakersSubmitRequest,
     SettingsResponse,
     SettingsUpdate,
     StepEvent,
+    SummaryUpdateRequest,
 )
 
 
@@ -35,7 +42,14 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    queue = PipelineQueue(parallel_enabled=False, max_concurrent=1)
+    config = load_app_config(config_path)
+    s3_client = S3Client(config.settings)
+    queue = PipelineQueue(
+        parallel_enabled=False,
+        max_concurrent=1,
+        state_path=config.runs_dir / "pipeline_state.json",
+        s3_client=s3_client,
+    )
 
     def _allowed_path(relative_path: str) -> Path:
         if not relative_path or ".." in relative_path or relative_path.startswith("/"):
@@ -43,7 +57,6 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         rel = relative_path.strip("/")
         if not rel:
             raise HTTPException(status_code=400, detail="Invalid path")
-        config = load_app_config(config_path)
         for base in (config.output_dir, config.runs_dir):
             full = (base / rel).resolve()
             try:
@@ -52,6 +65,73 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             except ValueError:
                 continue
         raise HTTPException(status_code=404, detail="File not found")
+
+    def _get_job_or_404(job_id: str):
+        job = queue.get_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return job
+
+    def _relative_to_output(path: Path) -> str:
+        out_dir = config.runs_dir.resolve()
+        try:
+            if path.resolve().is_relative_to(out_dir):
+                return str(path.resolve().relative_to(out_dir))
+        except ValueError:
+            pass
+        return path.name
+
+    def _summary_paths(job) -> tuple[Path, str]:
+        if not job.result or not job.result.get("summary_path"):
+            raise HTTPException(status_code=400, detail="Summary not available for this job")
+        summary_path = Path(job.result["summary_path"])
+        if not summary_path.exists():
+            raise HTTPException(status_code=404, detail="Summary not found")
+        return summary_path, summary_path.read_text(encoding="utf-8")
+
+    def _resolve_asset_path(filename: str) -> Path:
+        assets_dir = config.settings.project_root / "InnoFranceApp" / "assets"
+        candidate = assets_dir / filename
+        if candidate.exists():
+            return candidate
+        fallback = config.settings.project_root / "InnoFrance" / filename
+        if fallback.exists():
+            return fallback
+        raise HTTPException(status_code=404, detail=f"Asset not found: {filename}")
+
+    def _merge_audio_files(inputs: list[Path], output_path: Path) -> None:
+        cmd = [
+            "ffmpeg",
+            "-y",
+        ]
+        for path in inputs:
+            cmd.extend(["-i", str(path)])
+        cmd.extend(
+            [
+                "-filter_complex",
+                f"concat=n={len(inputs)}:v=0:a=1[out]",
+                "-map",
+                "[out]",
+                str(output_path),
+            ]
+        )
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"Audio merge failed: {result.stderr}")
+
+    def _save_upload(file: UploadFile) -> Path:
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="Missing filename")
+        suffix = Path(file.filename).suffix.lower()
+        if suffix not in {".mp3", ".wav"}:
+            raise HTTPException(status_code=400, detail="Only .mp3 or .wav files are supported")
+        uploads_dir = config.runs_dir / "uploads"
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        target = uploads_dir / f"{Path(file.filename).stem}_{uuid.uuid4().hex}{suffix}"
+        with open(target, "wb") as out:
+            shutil.copyfileobj(file.file, out)
+        return target
+
 
     @app.get("/api/settings", response_model=SettingsResponse)
     def get_settings() -> SettingsResponse:
@@ -67,6 +147,7 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             queue.parallel_enabled = body.parallel_enabled
         if body.max_concurrent is not None:
             queue.max_concurrent = body.max_concurrent
+        queue.save_state()
         return get_settings()
 
     @app.post("/api/pipeline/start", response_model=PipelineJobResponse)
@@ -77,16 +158,23 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
                 status_code=400,
                 detail="Provide exactly one of youtube_url, audio_url, or audio_path.",
             )
+        if not req.model_name or not req.model_name.strip():
+            raise HTTPException(status_code=400, detail="model_name is required")
         try:
             job = await queue.enqueue(req, config_path)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         return PipelineJobResponse(**job.to_response())
 
+    @app.post("/api/uploads/audio")
+    def upload_audio(file: UploadFile = File(...)):
+        saved = _save_upload(file)
+        return {"path": str(saved)}
+
     @app.get("/api/pipeline/jobs", response_model=PipelineListResponse)
-    def list_pipeline_jobs() -> PipelineListResponse:
+    def list_pipeline_jobs(include_steps: bool = Query(False)) -> PipelineListResponse:
         return PipelineListResponse(
-            jobs=[PipelineJobResponse(**j) for j in queue.list_jobs()],
+            jobs=[PipelineJobResponse(**j) for j in queue.list_jobs(include_steps=include_steps)],
             max_concurrent=queue.max_concurrent,
             parallel_enabled=queue.parallel_enabled,
         )
@@ -97,6 +185,13 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
         return PipelineJobResponse(**job.to_response())
+
+    @app.delete("/api/pipeline/jobs/{job_id}", response_model=PipelineJobResponse)
+    def delete_pipeline_job(job_id: str) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id)
+        queue.delete_job(job_id)
+        return PipelineJobResponse(**job.to_response())
+
 
     @app.get("/api/pipeline/jobs/{job_id}/stream")
     async def stream_pipeline_events(job_id: str):
@@ -113,6 +208,139 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             yield {"event": "done", "data": "{}"}
 
         return EventSourceResponse(event_generator())
+
+    @app.post("/api/pipeline/jobs/{job_id}/speakers", response_model=PipelineJobResponse)
+    def submit_speakers(job_id: str, body: SpeakersSubmitRequest) -> PipelineJobResponse:
+        try:
+            job = queue.submit_speakers(job_id, body.speakers_json)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return PipelineJobResponse(**job.to_response())
+
+    @app.get("/api/pipeline/jobs/{job_id}/summary")
+    def get_summary(job_id: str):
+        job = _get_job_or_404(job_id)
+        _, summary_text = _summary_paths(job)
+        return PlainTextResponse(summary_text)
+
+    @app.patch("/api/pipeline/jobs/{job_id}/summary", response_model=PipelineJobResponse)
+    def update_summary(job_id: str, body: SummaryUpdateRequest) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id)
+        summary_path, _ = _summary_paths(job)
+        summary_path.write_text(body.text, encoding="utf-8")
+        summary_url = job.result.get("summary_url") if job.result else None
+        if s3_client.enabled:
+            uploaded = s3_client.upload_file(str(summary_path), summary_path.name)
+            if uploaded:
+                summary_url = uploaded.url
+        if summary_url is not None:
+            queue.update_job_result(job_id, {"summary_url": summary_url})
+        queue.save_state()
+        return PipelineJobResponse(**job.to_response())
+
+    @app.post("/api/pipeline/jobs/{job_id}/summary-audio", response_model=PipelineJobResponse)
+    async def generate_summary_audio(job_id: str) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id)
+        summary_path, summary_text = _summary_paths(job)
+        if not summary_text.strip():
+            raise HTTPException(status_code=400, detail="Summary text is empty")
+
+        run_dir_value = job.result.get("run_dir") if job.result else None
+        if not run_dir_value:
+            raise HTTPException(status_code=400, detail="Run directory not available")
+        run_dir = Path(run_dir_value)
+        summary_audio_path = run_dir / "summary_audio.wav"
+        prompt_dir = config.settings.tts_dir / "examples" / "voice_prompts"
+        ref_audio = prompt_dir / "zh_young_man.wav"
+        ref_text_path = prompt_dir / "zh_young_man.txt"
+        if not ref_audio.exists():
+            raise HTTPException(status_code=404, detail="Voice prompt audio not found")
+        ref_text = ""
+        if ref_text_path.exists():
+            ref_text = ref_text_path.read_text(encoding="utf-8").strip()
+
+        speaker_configs = [
+            {
+                "speaker_tag": "[SPEAKER0]",
+                "ref_audio": str(ref_audio),
+                "ref_text": ref_text,
+                "language": "Chinese",
+            }
+        ]
+        tts_client = MCPToolClient(config.services["tts"])
+        result = await tts_client.call_tool(
+            "clone_voice",
+            {
+                "text": summary_text,
+                "speaker_configs_json": json.dumps(speaker_configs, ensure_ascii=False),
+                "speed": 1.0,
+                "output_path": str(summary_audio_path),
+            },
+        )
+        if not result.get("success"):
+            error = result.get("error", "Summary audio generation failed")
+            raise HTTPException(status_code=500, detail=error)
+
+        summary_audio_url = None
+        if s3_client.enabled:
+            run_prefix = run_dir.name
+            uploaded = s3_client.upload_file(
+                str(summary_audio_path), f"{run_prefix}/{summary_audio_path.name}"
+            )
+            if uploaded:
+                summary_audio_url = uploaded.url
+
+        job = queue.update_job_result(
+            job_id,
+            {
+                "summary_audio_path": str(summary_audio_path),
+                "summary_audio_relative": _relative_to_output(summary_audio_path),
+                "summary_audio_url": summary_audio_url,
+            },
+        )
+        return PipelineJobResponse(**job.to_response())
+
+    @app.post("/api/pipeline/jobs/{job_id}/merge-audio", response_model=PipelineJobResponse)
+    def merge_final_audio(job_id: str) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id)
+        if not job.result:
+            raise HTTPException(status_code=400, detail="Job results not available")
+        audio_path_value = job.result.get("audio_path")
+        summary_audio_value = job.result.get("summary_audio_path")
+        if not audio_path_value or not summary_audio_value:
+            raise HTTPException(status_code=400, detail="Summary audio and dialogue audio are required")
+
+        run_dir_value = job.result.get("run_dir")
+        if not run_dir_value:
+            raise HTTPException(status_code=400, detail="Run directory not available")
+        run_dir = Path(run_dir_value)
+        output_path = run_dir / "final_audio.wav"
+        inputs = [
+            _resolve_asset_path("start_music.wav"),
+            _resolve_asset_path("beginning.wav"),
+            Path(summary_audio_value),
+            Path(audio_path_value),
+        ]
+        _merge_audio_files(inputs, output_path)
+
+        merged_audio_url = None
+        if s3_client.enabled:
+            run_prefix = run_dir.name
+            uploaded = s3_client.upload_file(
+                str(output_path), f"{run_prefix}/{output_path.name}"
+            )
+            if uploaded:
+                merged_audio_url = uploaded.url
+
+        job = queue.update_job_result(
+            job_id,
+            {
+                "merged_audio_path": str(output_path),
+                "merged_audio_relative": _relative_to_output(output_path),
+                "merged_audio_url": merged_audio_url,
+            },
+        )
+        return PipelineJobResponse(**job.to_response())
 
     @app.get("/api/artifacts/download")
     def download_artifact(

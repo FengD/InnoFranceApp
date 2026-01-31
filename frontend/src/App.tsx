@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  deleteJob,
   getJob,
   getSettings,
   listJobs,
@@ -18,22 +19,26 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(true);
 
   const refreshJobs = useCallback(async () => {
     try {
-      const data = await listJobs();
-      setJobs(data.jobs);
+      const data = await listJobs(false);
+      const ordered = data.jobs
+        .slice()
+        .sort((a, b) => b.created_at.localeCompare(a.created_at));
+      setJobs(ordered);
+      const active = ordered.filter(
+        (job) => job.status === "queued" || job.status === "running"
+      );
+      if (active.length > 0) {
+        const fresh = await Promise.all(active.map((job) => getJob(job.job_id)));
+        setJobs((prev) =>
+          prev.map((job) => fresh.find((f) => f.job_id === job.job_id) ?? job)
+        );
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load jobs");
-    }
-  }, []);
-
-  const refreshSettings = useCallback(async () => {
-    try {
-      const data = await getSettings();
-      setSettings(data);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load settings");
     }
   }, []);
 
@@ -64,6 +69,16 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (jobs.every((job) => job.status === "completed" || job.status === "failed")) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      refreshJobs();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [jobs, refreshJobs]);
+
   const handleStart = useCallback(
     async (body: Parameters<typeof startPipeline>[0]) => {
       setError(null);
@@ -84,16 +99,13 @@ function App() {
                 j.job_id === job.job_id
                   ? {
                       ...j,
-                      steps: [
-                        ...j.steps,
-                        {
-                          step: step.step ?? "",
-                          status: step.status ?? "",
-                          message: step.message ?? "",
-                          detail: step.detail ?? null,
-                          timestamp: step.timestamp ?? new Date().toISOString(),
-                        },
-                      ],
+                      steps: upsertStep(j.steps, {
+                        step: step.step ?? "",
+                        status: step.status ?? "",
+                        message: step.message ?? "",
+                        detail: step.detail ?? null,
+                        timestamp: step.timestamp ?? new Date().toISOString(),
+                      }),
                     }
                   : j
               )
@@ -136,6 +148,26 @@ function App() {
       // ignore
     }
   }, []);
+
+  const handleDeleteJob = useCallback(async (jobId: string) => {
+    const confirmed = window.confirm("Delete this history record?");
+    if (!confirmed) return;
+    try {
+      await deleteJob(jobId);
+      setJobs((prev) => prev.filter((job) => job.job_id !== jobId));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to delete job");
+    }
+  }, []);
+
+  const activeJobs = useMemo(
+    () => jobs.filter((job) => job.status === "queued" || job.status === "running"),
+    [jobs]
+  );
+  const historyJobs = useMemo(
+    () => jobs.filter((job) => job.status === "completed" || job.status === "failed"),
+    [jobs]
+  );
 
   if (loading) {
     return (
@@ -187,7 +219,7 @@ function App() {
         </section>
 
         <section className="section">
-          <h2>Pipelines</h2>
+          <h2>Current pipelines</h2>
           <p className="muted">
             Up to {settings?.max_queued ?? 3} pipelines (queued + running).
             {settings?.parallel_enabled
@@ -195,10 +227,10 @@ function App() {
               : " One runs at a time."}
           </p>
           <div className="job-list">
-            {jobs.length === 0 ? (
+            {activeJobs.length === 0 ? (
               <p className="muted">No pipelines yet. Start one above.</p>
             ) : (
-              jobs.map((job) => (
+              activeJobs.map((job) => (
                 <JobCard
                   key={job.job_id}
                   job={job}
@@ -208,9 +240,46 @@ function App() {
             )}
           </div>
         </section>
+        <section className="section">
+          <div className="section-header">
+            <h2>History</h2>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setShowHistory((v) => !v)}
+              aria-expanded={showHistory}
+            >
+              {showHistory ? "Hide" : "Show"}
+            </button>
+          </div>
+          {showHistory && (
+            <div className="job-list">
+              {historyJobs.length === 0 ? (
+                <p className="muted">No completed pipelines yet.</p>
+              ) : (
+                historyJobs.map((job) => (
+                  <JobCard
+                    key={job.job_id}
+                    job={job}
+                    onRefresh={() => handleRefreshJob(job.job_id)}
+                    onDelete={() => handleDeleteJob(job.job_id)}
+                  />
+                ))
+              )}
+            </div>
+          )}
+        </section>
       </main>
     </div>
   );
 }
 
 export default App;
+
+function upsertStep(steps: PipelineJob["steps"], nextStep: PipelineJob["steps"][number]) {
+  const index = steps.findIndex((s) => s.step === nextStep.step);
+  if (index === -1) {
+    return [...steps, nextStep];
+  }
+  return steps.map((s, i) => (i === index ? { ...s, ...nextStep } : s));
+}

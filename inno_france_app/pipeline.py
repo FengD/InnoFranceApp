@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import shutil
@@ -14,7 +15,7 @@ from typing import Any, Callable, Optional
 from .config import AppConfig
 from .mcp_clients import MCPToolClient
 from .speaker_profiles import build_speaker_configs
-from .text_utils import normalize_translation_text
+from .text_utils import normalize_translation_text, parse_speaker_lines
 
 
 PIPELINE_STEPS = (
@@ -47,7 +48,7 @@ class InnoFrancePipeline:
         audio_url: Optional[str],
         audio_path: Optional[str],
         provider: str,
-        model_name: Optional[str],
+        model_name: str,
         language: str,
         chunk_length: int,
         speed: float,
@@ -56,19 +57,20 @@ class InnoFrancePipeline:
         yt_user_agent: Optional[str] = None,
         yt_proxy: Optional[str] = None,
         on_progress: Optional[Callable[[str, str, str, Optional[str]], None]] = None,
+        manual_speakers: bool = False,
+        speaker_future: Optional[asyncio.Future[str]] = None,
     ) -> PipelineResult:
         def _emit(step: str, status: str, message: str, detail: Optional[str] = None) -> None:
             if on_progress:
                 on_progress(step, status, message, detail)
 
-        output_dir = self.config.output_dir
         runs_dir = self.config.runs_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
         runs_dir.mkdir(parents=True, exist_ok=True)
 
-        sp_index = _next_sp_index(output_dir)
+        sp_index = _next_sp_index(runs_dir)
         base_name = "youtube_audio"
-        run_name = f"sp{sp_index}_{base_name}"
+        stamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        run_name = f"sp{sp_index}_{base_name}_{stamp}"
         run_dir = runs_dir / run_name
         run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -113,14 +115,14 @@ class InnoFrancePipeline:
 
             filename = yt_result.get("filename") or yt_result.get("file_path") or ""
             base_name = _sanitize_base_name(filename) or base_name
-            run_name = f"sp{sp_index}_{base_name}"
+            run_name = f"sp{sp_index}_{base_name}_{stamp}"
             if run_name != run_dir.name:
                 run_dir = _rename_run_dir(run_dir, runs_dir, run_name)
                 audio_path = run_dir / "audio.mp3"
             audio_path = _resolve_audio_path(audio_path, run_dir, yt_result)
             _emit("youtube_audio", "completed", "YouTube audio extracted", str(audio_path))
 
-        run_name = f"sp{sp_index}_{base_name}"
+        run_name = f"sp{sp_index}_{base_name}_{stamp}"
         if run_name != run_dir.name:
             run_dir = _rename_run_dir(run_dir, runs_dir, run_name)
             audio_path = run_dir / Path(audio_path).name
@@ -174,25 +176,36 @@ class InnoFrancePipeline:
         _ensure_success(summary_result, "Summary generation failed")
         summary_text = str(summary_result.get("result", "")).strip()
 
-        summary_path = output_dir / f"{run_name}.txt"
+        summary_path = run_dir / "summary.txt"
         summary_path.write_text(summary_text, encoding="utf-8")
         _emit("summary", "completed", "Summary saved", str(summary_path))
 
-        _emit("speakers", "running", "Building speaker configs", None)
-        speakers = build_speaker_configs(translated_text)
+        speaker_count = _count_speakers(translated_text)
+        speakers: list[dict[str, Any]]
+        if manual_speakers:
+            if speaker_future is None:
+                raise RuntimeError("Manual speakers enabled but no input channel provided")
+            _emit(
+                "speakers",
+                "waiting",
+                "Awaiting manual speaker JSON",
+                f"{speaker_count} speakers detected",
+            )
+            speakers_json = await speaker_future
+            speakers = _parse_speaker_configs(speakers_json, self.config.settings.project_root)
+            _emit("speakers", "running", "Using provided speaker configs", None)
+        else:
+            _emit("speakers", "running", "Building speaker configs", None)
+            speakers = build_speaker_configs(translated_text)
         speakers_path = run_dir / "speakers.json"
         speakers_path.write_text(
-            json.dumps(speakers, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        speakers_output_path = output_dir / f"{run_name}.speakers.json"
-        speakers_output_path.write_text(
             json.dumps(speakers, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         _emit("speakers", "completed", "Speaker configs saved", str(speakers_path))
 
         _emit("tts", "running", "Generating multi-speaker audio", None)
         tts_text = normalize_translation_text(translated_text)
-        audio_output_path = output_dir / f"{run_name}.wav"
+        audio_output_path = run_dir / "audio.wav"
         tts_result = await tts_client.call_tool(
             "clone_voice",
             {
@@ -354,3 +367,46 @@ def _download_audio_to_run(url: str, run_dir: Path) -> Path:
         with open(target, "wb") as f:
             shutil.copyfileobj(response, f)
     return target
+
+
+def _count_speakers(translated_text: str) -> int:
+    speakers = parse_speaker_lines(translated_text)
+    if not speakers:
+        return 1
+    return len(speakers)
+
+
+def _parse_speaker_configs(payload: str, project_root: Path) -> list[dict[str, Any]]:
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Invalid JSON for speaker configs") from exc
+    if not isinstance(data, list) or not data:
+        raise ValueError("Speaker configs must be a non-empty list")
+    for item in data:
+        if not isinstance(item, dict):
+            raise ValueError("Each speaker config must be an object")
+        ref_audio = item.get("ref_audio")
+        if isinstance(ref_audio, str) and ref_audio:
+            item["ref_audio"] = _resolve_media_path(ref_audio, project_root)
+        ref_text_file = item.get("ref_text_file")
+        if isinstance(ref_text_file, str) and ref_text_file:
+            item["ref_text_file"] = _resolve_media_path(ref_text_file, project_root)
+    return data
+
+
+def _resolve_media_path(value: str, project_root: Path) -> str:
+    path = Path(value)
+    if path.is_absolute():
+        if not path.exists():
+            raise ValueError(f"File not found: {value}")
+        return str(path)
+    candidate = (project_root / path).resolve()
+    if candidate.exists():
+        return str(candidate)
+    # fallback: look under voice prompts
+    prompt_dir = project_root / "InnoFranceVoiceGenerateAgent" / "examples" / "voice_prompts"
+    fallback = (prompt_dir / path.name).resolve()
+    if fallback.exists():
+        return str(fallback)
+    raise ValueError(f"File not found: {value}")

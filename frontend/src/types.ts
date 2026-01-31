@@ -10,10 +10,21 @@ export interface PipelineResult {
   summary_path: string;
   audio_path: string;
   run_dir: string;
+  speakers_path?: string;
   summary_name: string;
   audio_name: string;
   summary_relative: string;
   audio_relative: string;
+  speakers_relative?: string;
+  summary_url?: string;
+  audio_url?: string;
+  speakers_url?: string;
+  summary_audio_path?: string;
+  summary_audio_relative?: string;
+  summary_audio_url?: string;
+  merged_audio_path?: string;
+  merged_audio_relative?: string;
+  merged_audio_url?: string;
 }
 
 export interface PipelineJob {
@@ -25,6 +36,8 @@ export interface PipelineJob {
   error: string | null;
   steps: StepEvent[];
   result: PipelineResult | null;
+  speaker_required?: boolean;
+  speaker_submitted?: boolean;
 }
 
 export interface PipelineListResponse {
@@ -52,4 +65,5 @@ export interface PipelineStartRequest {
   yt_cookies_from_browser?: string | null;
   yt_user_agent?: string | null;
   yt_proxy?: string | null;
+  manual_speakers?: boolean;
 }

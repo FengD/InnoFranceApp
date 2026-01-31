@@ -23,13 +23,13 @@ def load_app_config(config_path: Optional[Path] = None) -> AppConfig:
     final_path = (config_path or default_config_path).expanduser().resolve()
 
     default_services = _default_services(settings)
-    output_dir = settings.output_dir
     runs_dir = settings.runs_dir
+    output_dir = runs_dir
 
     if final_path.exists():
         data = _read_json(final_path)
-        output_dir = _resolve_path(data.get("output_dir"), settings, fallback=output_dir)
         runs_dir = _resolve_path(data.get("runs_dir"), settings, fallback=runs_dir)
+        output_dir = runs_dir
         service_overrides = data.get("services", {})
         services = _merge_services(default_services, service_overrides, settings)
     else:

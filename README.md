@@ -19,6 +19,21 @@ The app orchestrates multiple MCP services:
 - **Progress**: Per-pipeline step progress and optional detailed logs (audio source → transcription → translation → summary → speakers → TTS).
 - **Artifacts**: Download and preview summary text and generated audio for completed runs.
 
+## Docs
+
+- User guide (中文): `docs/user_guide_zh.md`
+- User guide (English): `docs/user_guide_en.md`
+- Installation (中文): `docs/installation_zh.md`
+- Installation (English): `docs/installation_en.md`
+- Developer guide (中文): `docs/developer_zh.md`
+- Developer guide (English): `docs/developer_en.md`
+
+## UI Preview
+
+![UI 1](docs/1.png)
+![UI 2](docs/2.png)
+![UI 3](docs/3.png)
+
 ## Project Structure
 
 ```
@@ -105,20 +120,40 @@ pip install -r InnoFranceVoiceGenerateAgent/requirements.txt
 
 ### CLI (single pipeline)
 
+Example:
+
 ```bash
 python3 -m inno_france_app.cli \
   --youtube-url "https://www.youtube.com/watch?v=WRvWLWfv4Ts" \
   --provider openai \
+  --model-name gpt-4o-mini \
   --language fr \
+  --chunk-length 30 \
   --speed 1.0
 ```
 
 With audio URL or local path:
 
 ```bash
-python3 -m inno_france_app.cli --audio-url "https://example.com/audio.mp3" --provider openai
-python3 -m inno_france_app.cli --audio-path "/path/to/audio.wav" --provider openai
+python3 -m inno_france_app.cli --audio-url "https://example.com/audio.mp3" --provider openai --model-name gpt-4o-mini
+python3 -m inno_france_app.cli --audio-path "/path/to/audio.wav" --provider openai --model-name gpt-4o-mini
 ```
+
+All CLI parameters:
+
+- `--youtube-url`: YouTube video URL. Use exactly one input source.
+- `--audio-url`: Direct audio URL (`.mp3` or `.wav`).
+- `--audio-path`: Local audio path (`.mp3` or `.wav`).
+- `--provider`: LLM provider for translation/summary (default: `openai`).
+- `--model-name`: LLM model name (required).
+- `--language`: ASR language code (default: `fr`).
+- `--chunk-length`: ASR chunk length in seconds (default: `30`).
+- `--speed`: TTS playback speed (default: `1.0`).
+- `--yt-cookies-file`: Path to a YouTube `cookies.txt` file (optional).
+- `--yt-cookies-from-browser`: Browser name for yt-dlp cookies (e.g. `chrome`).
+- `--yt-user-agent`: Custom User-Agent for YouTube extraction.
+- `--yt-proxy`: Proxy URL for YouTube extraction.
+- `--config`: Path to config JSON to override `config.json`.
 
 ### Web UI (queue, progress, download/preview)
 
@@ -161,10 +196,15 @@ npm run dev
 
 ## Output Artifacts
 
-- **Summary**: `InnoFrance/sp{n}_<base>.txt`
-- **Audio**: `InnoFrance/sp{n}_<base>.wav`
-- **Speakers**: `InnoFrance/sp{n}_<base>.speakers.json`
-- **Run artifacts**: `InnoFranceApp/runs/sp{n}_<base>/` — `audio.mp3`, `transcript.json`, `translated.txt`, `speakers.json`
+- **Run artifacts**: `InnoFranceApp/runs/sp{n}_<base>_<timestamp>/`
+  - `audio.mp3` (source)
+  - `transcript.json`
+  - `translated.txt`
+  - `summary.txt`
+  - `speakers.json`
+  - `audio.wav` (dialogue)
+  - `summary_audio.wav` (summary TTS)
+  - `final_audio.wav` (merged output)
 
 ## Configuration
 
@@ -185,7 +225,6 @@ All of these can be set in `.env` (or in the shell). The app reads them on start
 **Paths (this app)**
 
 - `INNOFRANCE_PROJECT_ROOT` — Override repo root (optional)
-- `INNOFRANCE_OUTPUT_DIR` — Output directory for summary and audio (default: `<root>/InnoFrance`)
 - `INNOFRANCE_RUNS_DIR` — Run artifacts directory (default: `<root>/InnoFranceApp/runs`)
 - `INNOFRANCE_PYTHON_CMD` — Python command for MCP services (default: `python3`)
 - `INNOFRANCE_YT_EXTRACTOR_DIR`, `INNOFRANCE_ASR_DIR`, `INNOFRANCE_TRANSLATE_DIR`, `INNOFRANCE_TTS_DIR` — Paths to each MCP service repo
@@ -213,7 +252,6 @@ Structure:
 
 ```json
 {
-  "output_dir": "InnoFrance",
   "runs_dir": "InnoFranceApp/runs",
   "services": {
     "youtube_audio": { "transport": "stdio", "command": "python3", "args": ["-m", "app.mcp_server"], "cwd": "InnoFranceYTAudioExtractor" },

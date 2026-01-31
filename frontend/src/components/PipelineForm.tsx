@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { uploadAudio } from "../api";
 import type { PipelineStartRequest } from "../types";
 
 type SourceType = "youtube" | "audio_url" | "audio_path";
@@ -17,11 +18,14 @@ export function PipelineForm({
   const [sourceType, setSourceType] = useState<SourceType>("youtube");
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [audioUrl, setAudioUrl] = useState("");
-  const [audioPath, setAudioPath] = useState("");
+  const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [provider, setProvider] = useState("openai");
+  const [modelName, setModelName] = useState("");
   const [language, setLanguage] = useState("fr");
   const [chunkLength, setChunkLength] = useState(30);
   const [speed, setSpeed] = useState(1.0);
+  const [manualSpeakers, setManualSpeakers] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -30,10 +34,13 @@ export function PipelineForm({
     try {
       const body: PipelineStartRequest = {
         provider,
+        model_name: modelName.trim(),
         language,
         chunk_length: chunkLength,
         speed,
+        manual_speakers: manualSpeakers,
       };
+      if (!body.model_name) return;
       if (sourceType === "youtube") {
         if (!youtubeUrl.trim()) return;
         body.youtube_url = youtubeUrl.trim();
@@ -41,14 +48,17 @@ export function PipelineForm({
         if (!audioUrl.trim()) return;
         body.audio_url = audioUrl.trim();
       } else {
-        if (!audioPath.trim()) return;
-        body.audio_path = audioPath.trim();
+        if (!audioFile) return;
+        setUploading(true);
+        const uploaded = await uploadAudio(audioFile);
+        body.audio_path = uploaded.path;
       }
       await onStart(body);
       setYoutubeUrl("");
       setAudioUrl("");
-      setAudioPath("");
+      setAudioFile(null);
     } finally {
+      setUploading(false);
       setSubmitting(false);
     }
   };
@@ -56,7 +66,9 @@ export function PipelineForm({
   const canSubmit =
     (sourceType === "youtube" && youtubeUrl.trim()) ||
     (sourceType === "audio_url" && audioUrl.trim()) ||
-    (sourceType === "audio_path" && audioPath.trim());
+    (sourceType === "audio_path" && audioFile);
+
+  const hasModelName = modelName.trim().length > 0;
 
   return (
     <form className="form" onSubmit={handleSubmit}>
@@ -97,14 +109,16 @@ export function PipelineForm({
       )}
       {sourceType === "audio_path" && (
         <div className="form-group">
-          <label htmlFor="audio-path">Local path</label>
+          <label htmlFor="audio-file">Local audio file</label>
           <input
-            id="audio-path"
-            type="text"
-            value={audioPath}
-            onChange={(e) => setAudioPath(e.target.value)}
-            placeholder="/path/to/audio.mp3"
+            id="audio-file"
+            type="file"
+            accept=".mp3,.wav,audio/mpeg,audio/wav"
+            onChange={(e) => setAudioFile(e.target.files?.[0] ?? null)}
           />
+          {audioFile && (
+            <span className="muted">Selected: {audioFile.name}</span>
+          )}
         </div>
       )}
       <div className="form-row">
@@ -117,7 +131,22 @@ export function PipelineForm({
           >
             <option value="openai">OpenAI</option>
             <option value="deepseek">DeepSeek</option>
+            <option value="ollama">Ollama</option>
+            <option value="qwen">Qwen</option>
+            <option value="glm">GLM</option>
+            <option value="sglang">SGLang</option>
+            <option value="vllm">vLLM</option>
           </select>
+        </div>
+        <div className="form-group">
+          <label htmlFor="model-name">Model name</label>
+          <input
+            id="model-name"
+            type="text"
+            value={modelName}
+            onChange={(e) => setModelName(e.target.value)}
+            placeholder="gpt-4o-mini, deepseek-chat, ..."
+          />
         </div>
         <div className="form-group">
           <label htmlFor="language">Language</label>
@@ -128,6 +157,10 @@ export function PipelineForm({
           >
             <option value="fr">French</option>
             <option value="en">English</option>
+            <option value="de">German</option>
+            <option value="it">Italian</option>
+            <option value="es">Spanish</option>
+            <option value="ja">Japanese</option>
           </select>
         </div>
         <div className="form-group">
@@ -158,15 +191,34 @@ export function PipelineForm({
         <button
           type="submit"
           className="btn btn-primary"
-          disabled={disabled || !canSubmit || submitting}
+          disabled={
+            disabled || !canSubmit || !hasModelName || submitting || uploading
+          }
         >
-          {submitting ? "Starting…" : "Start pipeline"}
+          {uploading ? "Uploading…" : submitting ? "Starting…" : "Start pipeline"}
         </button>
         {disabled && (
           <span className="muted">
             Queue full (max {maxQueued} pipelines).
           </span>
         )}
+        {!hasModelName && (
+          <span className="muted">Model name is required.</span>
+        )}
+      </div>
+      <div className="form-group">
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={manualSpeakers}
+            onChange={(e) => setManualSpeakers(e.target.checked)}
+          />
+          Provide speaker JSON after translation
+        </label>
+        <p className="muted" style={{ marginTop: "0.25rem", marginBottom: 0 }}>
+          If enabled, the pipeline pauses after translation and waits for your
+          speaker configs before voice synthesis.
+        </p>
       </div>
     </form>
   );

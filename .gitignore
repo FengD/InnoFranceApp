@@ -17,6 +17,11 @@ env/
 
 runs/
 
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+
 logs/
 *.log
 

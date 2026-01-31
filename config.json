@@ -1,5 +1,5 @@
 {
-  "output_dir": "InnoFrance",
+  "output_dir": "InnoFranceApp/runs",
   "runs_dir": "InnoFranceApp/runs",
   "services": {
     "youtube_audio": {

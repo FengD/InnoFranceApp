@@ -15,7 +15,7 @@ from .pipeline import InnoFrancePipeline
 @click.option("--audio-url", default=None, help="Direct audio URL (.mp3 or .wav).")
 @click.option("--audio-path", default=None, help="Local audio path (.mp3 or .wav).")
 @click.option("--provider", default="openai", show_default=True, help="LLM provider.")
-@click.option("--model-name", default=None, help="Override model name.")
+@click.option("--model-name", required=True, help="Override model name.")
 @click.option("--language", default="fr", show_default=True, help="ASR language code.")
 @click.option("--chunk-length", default=30, show_default=True, type=int, help="ASR chunk length.")
 @click.option("--speed", default=1.0, show_default=True, type=float, help="TTS speed.")
@@ -48,6 +48,8 @@ def main(
         raise click.UsageError(
             "Provide exactly one of --youtube-url, --audio-url, or --audio-path."
         )
+    if not model_name or not model_name.strip():
+        raise click.UsageError("--model-name is required.")
 
     config = load_app_config(Path(config_path) if config_path else None)
     pipeline = InnoFrancePipeline(config)
