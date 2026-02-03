@@ -86,6 +86,13 @@ def _default_services(settings: AppSettings) -> dict[str, MCPServerConfig]:
             args=["-m", "app.mcp_server"],
             cwd=settings.tts_dir,
         ),
+        "speaker_detect": MCPServerConfig(
+            name="speaker-detect",
+            transport="stdio",
+            command=settings.python_cmd,
+            args=["-m", "app.mcp_server"],
+            cwd=settings.speaker_detect_dir,
+        ),
     }
 
 

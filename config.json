@@ -29,6 +29,13 @@
       "command": "python3",
       "args": ["-m", "app.mcp_server"],
       "cwd": "InnoFranceVoiceGenerateAgent"
+    },
+    "speaker_detect": {
+      "name": "speaker-detect",
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["-m", "app.mcp_server"],
+      "cwd": "InnoFranceSpeakerDetect"
     }
   }
 }

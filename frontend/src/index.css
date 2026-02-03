@@ -463,6 +463,35 @@ a:hover {
   border-radius: 6px;
 }
 
+.speaker-clips {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.speaker-clip {
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.speaker-clip-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.875rem;
+  margin-bottom: 0.5rem;
+}
+
+.speaker-clip-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.8125rem;
+}
+
 .preview-textarea {
   width: 100%;
   min-height: 200px;

@@ -30,6 +30,7 @@ class AppSettings:
     asr_dir: Path
     translate_dir: Path
     tts_dir: Path
+    speaker_detect_dir: Path
     s3_endpoint: str
     s3_bucket: str
     s3_access_key: str
@@ -58,6 +59,9 @@ def load_settings() -> AppSettings:
     tts_dir = Path(
         os.getenv("INNOFRANCE_TTS_DIR", project_root / "InnoFranceVoiceGenerateAgent")
     ).expanduser().resolve()
+    speaker_detect_dir = Path(
+        os.getenv("INNOFRANCE_SPEAKER_DETECT_DIR", project_root / "InnoFranceSpeakerDetect")
+    ).expanduser().resolve()
 
     return AppSettings(
         project_root=project_root,
@@ -68,6 +72,7 @@ def load_settings() -> AppSettings:
         asr_dir=asr_dir,
         translate_dir=translate_dir,
         tts_dir=tts_dir,
+        speaker_detect_dir=speaker_detect_dir,
         s3_endpoint=os.getenv("INNOFRANCE_S3_ENDPOINT", ""),
         s3_bucket=os.getenv("INNOFRANCE_S3_BUCKET", ""),
         s3_access_key=os.getenv("INNOFRANCE_S3_ACCESS_KEY", ""),

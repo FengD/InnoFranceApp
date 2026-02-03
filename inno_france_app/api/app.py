@@ -285,7 +285,11 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         summary_path.write_text(body.text, encoding="utf-8")
         summary_url = job.result.get("summary_url") if job.result else None
         if s3_client.enabled:
-            uploaded = s3_client.upload_file(str(summary_path), summary_path.name)
+            run_prefix = None
+            if job.result and job.result.get("run_dir"):
+                run_prefix = Path(job.result["run_dir"]).name
+            key = f"{run_prefix}/{summary_path.name}" if run_prefix else summary_path.name
+            uploaded = s3_client.upload_file(str(summary_path), key)
             if uploaded:
                 summary_url = uploaded.url
         if summary_url is not None:
@@ -304,6 +308,17 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         job = _get_job_or_404(job_id)
         translated_path, _ = _translated_paths(job)
         translated_path.write_text(body.text, encoding="utf-8")
+        translated_url = job.result.get("translated_url") if job.result else None
+        if s3_client.enabled:
+            run_prefix = None
+            if job.result and job.result.get("run_dir"):
+                run_prefix = Path(job.result["run_dir"]).name
+            key = f"{run_prefix}/{translated_path.name}" if run_prefix else translated_path.name
+            uploaded = s3_client.upload_file(str(translated_path), key)
+            if uploaded:
+                translated_url = uploaded.url
+        if translated_url is not None:
+            queue.update_job_result(job_id, {"translated_url": translated_url})
         queue.save_state()
         return PipelineJobResponse(**job.to_response())
 

@@ -243,6 +243,10 @@ class PipelineQueue:
             audio_url = None
             summary_url = None
             speakers_url = None
+            translated_url = None
+            transcript_url = None
+            input_audio_url = None
+            speaker_audio_urls: list[str] = []
             if self._s3_client and self._s3_client.enabled:
                 run_prefix = result.run_dir.name
                 summary_uploaded = self._s3_client.upload_file(
@@ -260,17 +264,57 @@ class PipelineQueue:
                 )
                 if uploaded:
                     audio_url = uploaded.url
+                translated_uploaded = self._s3_client.upload_file(
+                    str(result.translated_text_path),
+                    f"{run_prefix}/{result.translated_text_path.name}",
+                )
+                if translated_uploaded:
+                    translated_url = translated_uploaded.url
+                transcript_uploaded = self._s3_client.upload_file(
+                    str(result.transcript_path),
+                    f"{run_prefix}/{result.transcript_path.name}",
+                )
+                if transcript_uploaded:
+                    transcript_url = transcript_uploaded.url
+                input_audio_uploaded = self._s3_client.upload_file(
+                    str(result.input_audio_path),
+                    f"{run_prefix}/{result.input_audio_path.name}",
+                )
+                if input_audio_uploaded:
+                    input_audio_url = input_audio_uploaded.url
+                for path in result.speaker_audio_paths:
+                    uploaded_path = self._s3_client.upload_file(
+                        str(path),
+                        f"{run_prefix}/{path.name}",
+                    )
+                    if uploaded_path and uploaded_path.url:
+                        speaker_audio_urls.append(uploaded_path.url)
             job.result = {
                 "translated_path": str(result.translated_text_path),
                 "summary_path": str(result.summary_path),
                 "audio_path": str(result.audio_path),
                 "run_dir": str(result.run_dir),
                 "speakers_path": str(result.speakers_path),
+                "transcript_path": str(result.transcript_path),
+                "input_audio_path": str(result.input_audio_path),
+                "speaker_audio_paths": [str(p) for p in result.speaker_audio_paths],
                 "summary_name": result.summary_path.name,
                 "audio_name": result.audio_path.name,
                 "translated_relative": str(result.translated_text_path.resolve().relative_to(runs_dir))
                 if result.translated_text_path.resolve().is_relative_to(runs_dir)
                 else result.translated_text_path.name,
+                "transcript_relative": str(result.transcript_path.resolve().relative_to(runs_dir))
+                if result.transcript_path.resolve().is_relative_to(runs_dir)
+                else result.transcript_path.name,
+                "input_audio_relative": str(result.input_audio_path.resolve().relative_to(runs_dir))
+                if result.input_audio_path.resolve().is_relative_to(runs_dir)
+                else result.input_audio_path.name,
+                "speaker_audio_relatives": [
+                    str(p.resolve().relative_to(runs_dir))
+                    if p.resolve().is_relative_to(runs_dir)
+                    else p.name
+                    for p in result.speaker_audio_paths
+                ],
                 "summary_relative": str(result.summary_path.resolve().relative_to(runs_dir))
                 if result.summary_path.resolve().is_relative_to(runs_dir)
                 else result.summary_path.name,
@@ -283,6 +327,10 @@ class PipelineQueue:
                 "summary_url": summary_url,
                 "audio_url": audio_url,
                 "speakers_url": speakers_url,
+                "translated_url": translated_url,
+                "transcript_url": transcript_url,
+                "input_audio_url": input_audio_url,
+                "speaker_audio_urls": speaker_audio_urls,
             }
         except Exception as e:
             job.status = "failed"

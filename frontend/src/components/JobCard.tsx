@@ -56,6 +56,7 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
   const [regenSpeakerJson, setRegenSpeakerJson] = useState("");
   const [regenBusy, setRegenBusy] = useState(false);
   const [regenError, setRegenError] = useState<string | null>(null);
+  const [showSpeakerClips, setShowSpeakerClips] = useState(false);
 
   const stepMap = useMemo(() => {
     const map = new Map<string, typeof job.steps[number]>();
@@ -91,6 +92,8 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
   const mergedAudioRelative = result?.merged_audio_relative;
   const summaryUrl = result?.summary_url;
   const audioUrl = result?.audio_url;
+  const speakerAudioRelatives = result?.speaker_audio_relatives ?? [];
+  const speakerAudioUrls = result?.speaker_audio_urls ?? [];
   const summaryAudioUrl = result?.summary_audio_url;
   const mergedAudioUrl = result?.merged_audio_url;
 
@@ -630,6 +633,59 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
                     <span className="muted">{speakerTemplateError}</span>
                   )}
                 </div>
+              </div>
+            )}
+            <div className="artifact-row">
+              <span>Speaker clips</span>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setShowSpeakerClips((v) => !v)}
+                disabled={speakerAudioRelatives.length === 0}
+              >
+                {showSpeakerClips ? "Hide" : "Preview"}
+              </button>
+            </div>
+            {showSpeakerClips && (
+              <div className="artifact-preview">
+                {speakerAudioRelatives.length === 0 ? (
+                  <p className="muted">No speaker clips available.</p>
+                ) : (
+                  <div className="speaker-clips">
+                    {speakerAudioRelatives.map((path, index) => {
+                      const s3Url = speakerAudioUrls[index];
+                      return (
+                        <div key={path} className="speaker-clip">
+                          <div className="speaker-clip-header">
+                            <span>speaker{index}.wav</span>
+                            <div className="speaker-clip-actions">
+                              <a
+                                href={downloadUrl(path)}
+                                download
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                Download
+                              </a>
+                              {s3Url && (
+                                <a href={s3Url} target="_blank" rel="noreferrer">
+                                  Open S3
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                          <audio
+                            controls
+                            src={previewAudioUrl(path)}
+                            className="preview-audio"
+                          >
+                            Your browser does not support audio.
+                          </audio>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
             <div className="artifact-row">

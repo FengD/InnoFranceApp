@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import shutil
+import subprocess
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -36,6 +37,8 @@ class PipelineResult:
     translated_text_path: Path
     transcript_path: Path
     speakers_path: Path
+    input_audio_path: Path
+    speaker_audio_paths: list[Path]
 
 
 class InnoFrancePipeline:
@@ -84,6 +87,7 @@ class InnoFrancePipeline:
         asr_client = MCPToolClient(_require_service(services, "asr"))
         translate_client = MCPToolClient(_require_service(services, "translate"))
         tts_client = MCPToolClient(_require_service(services, "tts"))
+        speaker_detect_client = MCPToolClient(_require_service(services, "speaker_detect"))
 
         audio_path_input = audio_path
         audio_path = run_dir / "audio.mp3"
@@ -216,6 +220,7 @@ class InnoFrancePipeline:
 
         speaker_count = _count_speakers(translated_text)
         speakers: list[dict[str, Any]]
+        speaker_audio_paths: list[Path] = []
         if manual_speakers:
             if speaker_future is None:
                 raise RuntimeError("Manual speakers enabled but no input channel provided")
@@ -232,8 +237,20 @@ class InnoFrancePipeline:
             speakers = _parse_speaker_configs(speakers_json, self.config.settings.project_root)
             _emit("speakers", "running", "Using provided speaker configs", None)
         else:
-            _emit("speakers", "running", "Building speaker configs", None)
-            speakers = build_speaker_configs(translated_text)
+            _emit("speakers", "running", "Detecting speaker profiles", None)
+            speaker_segments = _extract_speaker_segments(transcript)
+            speakers, speaker_audio_paths = await _detect_speaker_configs(
+                translated_text=translated_text,
+                audio_path=audio_path,
+                run_dir=run_dir,
+                speaker_segments=speaker_segments,
+                speaker_client=speaker_detect_client,
+                runs_dir=runs_dir,
+                emit=_emit,
+            )
+            if not speakers:
+                _emit("speakers", "running", "Fallback to default speaker configs", None)
+                speakers = build_speaker_configs(translated_text)
         speakers_path = run_dir / "speakers.json"
         speakers_path.write_text(
             json.dumps(speakers, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -272,6 +289,8 @@ class InnoFrancePipeline:
             translated_text_path=translated_text_path,
             transcript_path=transcript_path,
             speakers_path=speakers_path,
+            input_audio_path=Path(audio_path),
+            speaker_audio_paths=speaker_audio_paths,
         )
 
 
@@ -360,15 +379,19 @@ def _normalize_transcript(transcript: dict[str, Any]) -> dict[str, Any]:
         if not text:
             continue
         speaker = segment.get("speaker") or "SPEAKER0"
-        normalized.append(
-            {
-                "text": text,
-                "speaker": speaker,
-            }
-        )
+        entry = {
+            "text": text,
+            "speaker": speaker,
+        }
+        if segment.get("start") is not None and segment.get("end") is not None:
+            entry["start"] = float(segment.get("start"))
+            entry["end"] = float(segment.get("end"))
+        normalized.append(entry)
+    speaker_segments = _normalize_speaker_segments(transcript.get("speaker_segments"))
     return {
         "language": transcript.get("language"),
         "segments": normalized,
+        "speaker_segments": speaker_segments,
     }
 
 
@@ -432,6 +455,172 @@ def _count_speakers(translated_text: str) -> int:
     if not speakers:
         return 1
     return len(speakers)
+
+
+def _normalize_speaker_segments(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    normalized = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        start = item.get("start")
+        end = item.get("end")
+        speaker = item.get("speaker")
+        if start is None or end is None or not speaker:
+            continue
+        normalized.append(
+            {
+                "start": float(start),
+                "end": float(end),
+                "speaker": str(speaker),
+            }
+        )
+    return sorted(normalized, key=lambda x: x["start"])
+
+
+def _extract_speaker_segments(transcript: dict[str, Any]) -> list[dict[str, Any]]:
+    segments = transcript.get("speaker_segments")
+    normalized = _normalize_speaker_segments(segments)
+    if normalized:
+        return normalized
+    derived = []
+    for segment in transcript.get("segments", []):
+        if not isinstance(segment, dict):
+            continue
+        start = segment.get("start")
+        end = segment.get("end")
+        speaker = segment.get("speaker")
+        if start is None or end is None or not speaker:
+            continue
+        derived.append(
+            {
+                "start": float(start),
+                "end": float(end),
+                "speaker": str(speaker),
+            }
+        )
+    return sorted(derived, key=lambda x: x["start"])
+
+
+def _speaker_index_from_tag(tag: str) -> Optional[int]:
+    match = re.search(r"SPEAKER(\d+)", tag)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _pick_longest_segments(segments: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for item in segments:
+        speaker = str(item.get("speaker"))
+        start = float(item.get("start", 0))
+        end = float(item.get("end", 0))
+        if end <= start:
+            continue
+        duration = end - start
+        current = grouped.get(speaker)
+        if current is None or duration > float(current.get("duration", 0)):
+            grouped[speaker] = {
+                "speaker": speaker,
+                "start": start,
+                "end": end,
+                "duration": duration,
+            }
+    return grouped
+
+
+def _extract_audio_clip(source: Path, start: float, end: float, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "error",
+        "-ss",
+        str(max(start, 0)),
+        "-to",
+        str(max(end, 0)),
+        "-i",
+        str(source),
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"Speaker clip extraction failed: {result.stderr}")
+
+
+async def _detect_speaker_configs(
+    translated_text: str,
+    audio_path: Path,
+    run_dir: Path,
+    speaker_segments: list[dict[str, Any]],
+    speaker_client: MCPToolClient,
+    runs_dir: Path,
+    emit: Callable[[str, str, str, Optional[str]], None],
+) -> tuple[list[dict[str, Any]], list[Path]]:
+    if not speaker_segments:
+        emit("speakers", "running", "No speaker segments available for detection", None)
+        return [], []
+
+    longest = _pick_longest_segments(speaker_segments)
+    if not longest:
+        emit("speakers", "running", "No valid speaker segments for detection", None)
+        return [], []
+
+    speaker_order = sorted(longest.keys(), key=_speaker_sort_key)
+    if not speaker_order:
+        return [], []
+
+    speaker_audio_paths: list[Path] = []
+    speaker_configs: list[dict[str, Any]] = []
+
+    for fallback_index, speaker_label in enumerate(speaker_order):
+        segment = longest.get(speaker_label)
+        if not segment:
+            continue
+        label_index = _speaker_index_from_tag(speaker_label)
+        index = label_index if label_index is not None else fallback_index
+        output_path = run_dir / f"speaker{index}.wav"
+        _extract_audio_clip(audio_path, segment["start"], segment["end"], output_path)
+        speaker_audio_paths.append(output_path)
+        emit(
+            "speakers",
+            "running",
+            f"Speaker clip saved for {speaker_label}",
+            _relative_to_runs(output_path, runs_dir),
+        )
+
+        result = await speaker_client.call_tool(
+            "detect_speaker",
+            {"audio_path": str(output_path)},
+        )
+        profile = None
+        if result.get("success"):
+            profiles = result.get("result", [])
+            if isinstance(profiles, list) and profiles:
+                profile = profiles[0]
+            else:
+                emit("speakers", "running", f"No profile returned for {speaker_label}", None)
+        else:
+            error = result.get("error", "Unknown error")
+            emit("speakers", "running", f"Speaker detect failed for {speaker_label}", error)
+
+        speaker_configs.append(
+            {
+                "speaker_tag": f"[{speaker_label}]",
+                "design_text": (profile or {}).get("design_text") or f"说话人 {index}",
+                "design_instruct": (profile or {}).get("design_instruct")
+                or "性别与年龄未知，语速适中，音色自然清晰。",
+                "language": "Chinese",
+            }
+        )
+
+    return speaker_configs, speaker_audio_paths
 
 
 def _extract_speaker_tags(translated_text: str) -> list[str]:
