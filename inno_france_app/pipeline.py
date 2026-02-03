@@ -238,12 +238,12 @@ class InnoFrancePipeline:
             _emit("speakers", "running", "Using provided speaker configs", None)
         else:
             _emit("speakers", "running", "Detecting speaker profiles", None)
-            speaker_segments = _extract_speaker_segments(transcript)
+            speaker_groups = _group_segments_by_speaker(transcript)
             speakers, speaker_audio_paths = await _detect_speaker_configs(
                 translated_text=translated_text,
                 audio_path=audio_path,
                 run_dir=run_dir,
-                speaker_segments=speaker_segments,
+                speaker_groups=speaker_groups,
                 speaker_client=speaker_detect_client,
                 runs_dir=runs_dir,
                 emit=_emit,
@@ -503,6 +503,35 @@ def _extract_speaker_segments(transcript: dict[str, Any]) -> list[dict[str, Any]
     return sorted(derived, key=lambda x: x["start"])
 
 
+def _group_segments_by_speaker(
+    transcript: dict[str, Any],
+) -> dict[str, list[dict[str, float]]]:
+    grouped: dict[str, list[dict[str, float]]] = {}
+    segments = transcript.get("segments", [])
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        speaker = segment.get("speaker")
+        start = segment.get("start")
+        end = segment.get("end")
+        if speaker is None or start is None or end is None:
+            continue
+        grouped.setdefault(str(speaker), []).append(
+            {"start": float(start), "end": float(end)}
+        )
+    if grouped:
+        return grouped
+    fallback = _extract_speaker_segments(transcript)
+    for segment in fallback:
+        speaker = segment.get("speaker")
+        if not speaker:
+            continue
+        grouped.setdefault(str(speaker), []).append(
+            {"start": float(segment["start"]), "end": float(segment["end"])}
+        )
+    return grouped
+
+
 def _speaker_index_from_tag(tag: str) -> Optional[int]:
     match = re.search(r"SPEAKER(\d+)", tag)
     if not match:
@@ -510,24 +539,34 @@ def _speaker_index_from_tag(tag: str) -> Optional[int]:
     return int(match.group(1))
 
 
-def _pick_longest_segments(segments: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    grouped: dict[str, dict[str, Any]] = {}
-    for item in segments:
-        speaker = str(item.get("speaker"))
-        start = float(item.get("start", 0))
-        end = float(item.get("end", 0))
-        if end <= start:
+def _pick_representative_segments(
+    grouped: dict[str, list[dict[str, float]]],
+    min_duration: float = 3.0,
+    max_duration: float = 12.0,
+) -> dict[str, dict[str, Any]]:
+    selected: dict[str, dict[str, Any]] = {}
+    for speaker, segments in grouped.items():
+        durations = []
+        for seg in segments:
+            start = float(seg["start"])
+            end = float(seg["end"])
+            if end <= start:
+                continue
+            durations.append(
+                {
+                    "speaker": speaker,
+                    "start": start,
+                    "end": end,
+                    "duration": end - start,
+                }
+            )
+        if not durations:
             continue
-        duration = end - start
-        current = grouped.get(speaker)
-        if current is None or duration > float(current.get("duration", 0)):
-            grouped[speaker] = {
-                "speaker": speaker,
-                "start": start,
-                "end": end,
-                "duration": duration,
-            }
-    return grouped
+        in_range = [d for d in durations if min_duration <= d["duration"] <= max_duration]
+        candidates = in_range if in_range else durations
+        candidates.sort(key=lambda d: d["duration"])
+        selected[speaker] = candidates[len(candidates) // 2]
+    return selected
 
 
 def _extract_audio_clip(source: Path, start: float, end: float, output_path: Path) -> None:
@@ -558,21 +597,21 @@ async def _detect_speaker_configs(
     translated_text: str,
     audio_path: Path,
     run_dir: Path,
-    speaker_segments: list[dict[str, Any]],
+    speaker_groups: dict[str, list[dict[str, float]]],
     speaker_client: MCPToolClient,
     runs_dir: Path,
     emit: Callable[[str, str, str, Optional[str]], None],
 ) -> tuple[list[dict[str, Any]], list[Path]]:
-    if not speaker_segments:
+    if not speaker_groups:
         emit("speakers", "running", "No speaker segments available for detection", None)
         return [], []
 
-    longest = _pick_longest_segments(speaker_segments)
-    if not longest:
+    chosen = _pick_representative_segments(speaker_groups)
+    if not chosen:
         emit("speakers", "running", "No valid speaker segments for detection", None)
         return [], []
 
-    speaker_order = sorted(longest.keys(), key=_speaker_sort_key)
+    speaker_order = sorted(chosen.keys(), key=_speaker_sort_key)
     if not speaker_order:
         return [], []
 
@@ -580,7 +619,7 @@ async def _detect_speaker_configs(
     speaker_configs: list[dict[str, Any]] = []
 
     for fallback_index, speaker_label in enumerate(speaker_order):
-        segment = longest.get(speaker_label)
+        segment = chosen.get(speaker_label)
         if not segment:
             continue
         label_index = _speaker_index_from_tag(speaker_label)
