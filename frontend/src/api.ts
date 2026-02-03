@@ -34,7 +34,7 @@ export async function updateSettings(body: {
   max_concurrent?: number;
 }): Promise<SettingsResponse> {
   return request("/api/settings", {
-    method: "PATCH",
+    method: "POST",
     body: JSON.stringify(body),
   });
 }
@@ -67,6 +67,25 @@ export async function submitSpeakers(
   });
 }
 
+export async function getJobSpeakersTemplate(
+  jobId: string
+): Promise<{ speakers: unknown[]; detected_speakers: string[] }> {
+  const res = await request<{ speakers: unknown[]; detected_speakers: string[] }>(
+    `/api/pipeline/jobs/${jobId}/speakers-template`
+  );
+  return res;
+}
+
+export async function regenerateJobAudio(
+  jobId: string,
+  speakersJson: string
+): Promise<PipelineJob> {
+  return request(`/api/pipeline/jobs/${jobId}/tts`, {
+    method: "POST",
+    body: JSON.stringify({ speakers_json: speakersJson }),
+  });
+}
+
 export async function getJobSummary(jobId: string): Promise<string> {
   const res = await fetch(`${API_BASE}/api/pipeline/jobs/${jobId}/summary`);
   if (!res.ok) {
@@ -90,7 +109,7 @@ export async function updateJobSummary(
   text: string
 ): Promise<PipelineJob> {
   return request(`/api/pipeline/jobs/${jobId}/summary`, {
-    method: "PATCH",
+    method: "POST",
     body: JSON.stringify({ text }),
   });
 }
@@ -100,7 +119,7 @@ export async function updateJobTranslation(
   text: string
 ): Promise<PipelineJob> {
   return request(`/api/pipeline/jobs/${jobId}/translated`, {
-    method: "PATCH",
+    method: "POST",
     body: JSON.stringify({ text }),
   });
 }

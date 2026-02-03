@@ -23,25 +23,19 @@ function App() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
 
   const refreshJobs = useCallback(async () => {
+    const active = jobs.filter(
+      (job) => job.status === "queued" || job.status === "running"
+    );
+    if (active.length === 0) return;
     try {
-      const data = await listJobs(false);
-      const ordered = data.jobs
-        .slice()
-        .sort((a, b) => b.created_at.localeCompare(a.created_at));
-      setJobs(ordered);
-      const active = ordered.filter(
-        (job) => job.status === "queued" || job.status === "running"
+      const fresh = await Promise.all(active.map((job) => getJob(job.job_id)));
+      setJobs((prev) =>
+        prev.map((job) => fresh.find((f) => f.job_id === job.job_id) ?? job)
       );
-      if (active.length > 0) {
-        const fresh = await Promise.all(active.map((job) => getJob(job.job_id)));
-        setJobs((prev) =>
-          prev.map((job) => fresh.find((f) => f.job_id === job.job_id) ?? job)
-        );
-      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load jobs");
+      setError(e instanceof Error ? e.message : "Failed to refresh jobs");
     }
-  }, []);
+  }, [jobs]);
 
   useEffect(() => {
     let cancelled = false;
@@ -54,7 +48,10 @@ function App() {
           getSettings(),
         ]);
         if (!cancelled) {
-          setJobs(jobsRes.jobs);
+          const ordered = jobsRes.jobs
+            .slice()
+            .sort((a, b) => b.created_at.localeCompare(a.created_at));
+          setJobs(ordered);
           setSettings(settingsRes);
         }
       } catch (e) {

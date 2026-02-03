@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   downloadUrl,
   generateSummaryAudio,
+  getJobSpeakersTemplate,
   getJobTranslation,
   getJobSummary,
   mergeFinalAudio,
   previewAudioUrl,
+  regenerateJobAudio,
   submitSpeakers,
   updateJobTranslation,
   updateJobSummary,
@@ -45,8 +47,15 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
   const [speakerJson, setSpeakerJson] = useState("");
   const [speakerSubmitting, setSpeakerSubmitting] = useState(false);
   const [speakerError, setSpeakerError] = useState<string | null>(null);
+  const [speakerTemplateLoading, setSpeakerTemplateLoading] = useState(false);
+  const [speakerTemplateError, setSpeakerTemplateError] = useState<string | null>(null);
+  const [speakerTemplateLoaded, setSpeakerTemplateLoaded] = useState(false);
   const [summaryAudioBusy, setSummaryAudioBusy] = useState(false);
   const [mergeBusy, setMergeBusy] = useState(false);
+  const [showRegenerate, setShowRegenerate] = useState(false);
+  const [regenSpeakerJson, setRegenSpeakerJson] = useState("");
+  const [regenBusy, setRegenBusy] = useState(false);
+  const [regenError, setRegenError] = useState<string | null>(null);
 
   const stepMap = useMemo(() => {
     const map = new Map<string, typeof job.steps[number]>();
@@ -130,6 +139,58 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
       .finally(() => setTranslationLoading(false));
   }, [previewTranslation, job.job_id]);
 
+  useEffect(() => {
+    setSpeakerTemplateLoaded(false);
+  }, [job.job_id]);
+
+  const fetchSpeakerTemplate = useCallback(async () => {
+    setSpeakerTemplateLoading(true);
+    setSpeakerTemplateError(null);
+    try {
+      const template = await getJobSpeakersTemplate(job.job_id);
+      return {
+        text: JSON.stringify(template.speakers, null, 2),
+        detected: template.detected_speakers ?? [],
+      };
+    } catch (err) {
+      setSpeakerTemplateError(
+        err instanceof Error ? err.message : "Failed to load speaker template"
+      );
+      return null;
+    } finally {
+      setSpeakerTemplateLoading(false);
+    }
+  }, [job.job_id]);
+
+  useEffect(() => {
+    if (!waitingSpeakers || speakerTemplateLoaded || speakerJson.trim()) {
+      return;
+    }
+    fetchSpeakerTemplate().then((result) => {
+      if (!result) return;
+      if (result.detected.length === 0) {
+        setSpeakerTemplateError("No detected speakers yet.");
+        return;
+      }
+      setSpeakerJson(result.text);
+      setSpeakerTemplateLoaded(true);
+    });
+  }, [fetchSpeakerTemplate, speakerJson, speakerTemplateLoaded, waitingSpeakers]);
+
+  useEffect(() => {
+    if (!showRegenerate || regenSpeakerJson.trim()) {
+      return;
+    }
+    fetchSpeakerTemplate().then((result) => {
+      if (!result) return;
+      if (result.detected.length === 0) {
+        setSpeakerTemplateError("No detected speakers yet.");
+        return;
+      }
+      setRegenSpeakerJson(result.text);
+    });
+  }, [fetchSpeakerTemplate, regenSpeakerJson, showRegenerate]);
+
   const handleSummarySave = async () => {
     setSummarySaving(true);
     setSummaryError(null);
@@ -172,6 +233,37 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
       setSpeakerError(err instanceof Error ? err.message : "Failed to submit speakers");
     } finally {
       setSpeakerSubmitting(false);
+    }
+  };
+
+  const handleLoadSpeakerTemplate = async (
+    target: "speaker" | "regen" = "speaker"
+  ) => {
+    const result = await fetchSpeakerTemplate();
+    if (!result) return;
+    if (result.detected.length === 0) {
+      setSpeakerTemplateError("No detected speakers yet.");
+      return;
+    }
+    if (target === "speaker") {
+      setSpeakerJson(result.text);
+      setSpeakerTemplateLoaded(true);
+    } else {
+      setRegenSpeakerJson(result.text);
+    }
+  };
+
+  const handleRegenerateAudio = async () => {
+    if (!regenSpeakerJson.trim()) return;
+    setRegenBusy(true);
+    setRegenError(null);
+    try {
+      await regenerateJobAudio(job.job_id, regenSpeakerJson);
+      onRefresh();
+    } catch (err) {
+      setRegenError(err instanceof Error ? err.message : "Failed to regenerate audio");
+    } finally {
+      setRegenBusy(false);
     }
   };
 
@@ -357,6 +449,19 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
                 onChange={(e) => setSpeakerJson(e.target.value)}
                 placeholder='[{"speaker_tag":"[SPEAKER0]","ref_audio":"...","ref_text":"...","language":"Chinese"}]'
               />
+              <div className="artifact-actions">
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => handleLoadSpeakerTemplate("speaker")}
+                  disabled={speakerTemplateLoading}
+                >
+                  {speakerTemplateLoading ? "Loading…" : "Fill from detected speakers"}
+                </button>
+                {speakerTemplateError && (
+                  <span className="muted">{speakerTemplateError}</span>
+                )}
+              </div>
               <button
                 type="button"
                 className="btn btn-primary btn-sm"
@@ -473,6 +578,13 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
               >
                 {previewAudio ? "Hide preview" : "Preview"}
               </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setShowRegenerate((v) => !v)}
+              >
+                {showRegenerate ? "Hide" : "Customize speakers"}
+              </button>
             </div>
             {previewAudio && (
               <div className="artifact-preview">
@@ -487,6 +599,37 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
                 ) : (
                   <span className="muted">Missing audio file</span>
                 )}
+              </div>
+            )}
+            {showRegenerate && (
+              <div className="artifact-preview">
+                <textarea
+                  className="preview-textarea"
+                  value={regenSpeakerJson}
+                  onChange={(e) => setRegenSpeakerJson(e.target.value)}
+                />
+                <div className="artifact-actions">
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={handleRegenerateAudio}
+                    disabled={regenBusy || !regenSpeakerJson.trim()}
+                  >
+                    {regenBusy ? "Regenerating…" : "Regenerate audio"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => handleLoadSpeakerTemplate("regen")}
+                    disabled={speakerTemplateLoading}
+                  >
+                    {speakerTemplateLoading ? "Loading…" : "Use detected speakers"}
+                  </button>
+                  {regenError && <span className="muted">{regenError}</span>}
+                  {speakerTemplateError && (
+                    <span className="muted">{speakerTemplateError}</span>
+                  )}
+                </div>
               </div>
             )}
             <div className="artifact-row">

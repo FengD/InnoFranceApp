@@ -14,6 +14,9 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..config import load_app_config
 from ..mcp_clients import MCPToolClient
+from ..pipeline import _parse_speaker_configs
+from ..speaker_profiles import build_speaker_configs
+from ..text_utils import normalize_translation_text, parse_speaker_lines
 from ..s3 import S3Client
 from .queue import PipelineQueue
 from .schemas import (
@@ -105,6 +108,25 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Translation not found")
         return translated_path, translated_path.read_text(encoding="utf-8")
 
+    def _speakers_template(job) -> tuple[list[dict[str, Any]], list[str]]:
+        if job.result and job.result.get("speakers_path"):
+            speakers_path = Path(job.result["speakers_path"])
+            if speakers_path.exists():
+                try:
+                    speakers = json.loads(speakers_path.read_text(encoding="utf-8"))
+                    detected = [
+                        item.get("speaker_tag")
+                        for item in speakers
+                        if isinstance(item, dict) and item.get("speaker_tag")
+                    ]
+                    return speakers, sorted(detected)
+                except json.JSONDecodeError:
+                    pass
+        _, translated_text = _translated_paths(job)
+        speaker_lines = parse_speaker_lines(translated_text)
+        detected_tags = sorted(speaker_lines.keys())
+        return build_speaker_configs(translated_text), detected_tags
+
     def _find_translated_from_steps(job) -> Optional[Path]:
         for step in reversed(job.steps):
             if step.step == "translate" and step.detail:
@@ -168,7 +190,7 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             max_queued=PipelineQueue.MAX_QUEUED,
         )
 
-    @app.patch("/api/settings", response_model=SettingsResponse)
+    @app.post("/api/settings", response_model=SettingsResponse)
     def update_settings(body: SettingsUpdate) -> SettingsResponse:
         if body.parallel_enabled is not None:
             queue.parallel_enabled = body.parallel_enabled
@@ -244,13 +266,19 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e))
         return PipelineJobResponse(**job.to_response())
 
+    @app.get("/api/pipeline/jobs/{job_id}/speakers-template")
+    def get_speakers_template(job_id: str):
+        job = _get_job_or_404(job_id)
+        speakers, detected = _speakers_template(job)
+        return {"speakers": speakers, "detected_speakers": detected}
+
     @app.get("/api/pipeline/jobs/{job_id}/summary")
     def get_summary(job_id: str):
         job = _get_job_or_404(job_id)
         _, summary_text = _summary_paths(job)
         return PlainTextResponse(summary_text)
 
-    @app.patch("/api/pipeline/jobs/{job_id}/summary", response_model=PipelineJobResponse)
+    @app.post("/api/pipeline/jobs/{job_id}/summary", response_model=PipelineJobResponse)
     def update_summary(job_id: str, body: SummaryUpdateRequest) -> PipelineJobResponse:
         job = _get_job_or_404(job_id)
         summary_path, _ = _summary_paths(job)
@@ -271,7 +299,7 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         _, translated_text = _translated_paths(job)
         return PlainTextResponse(translated_text)
 
-    @app.patch("/api/pipeline/jobs/{job_id}/translated", response_model=PipelineJobResponse)
+    @app.post("/api/pipeline/jobs/{job_id}/translated", response_model=PipelineJobResponse)
     def update_translated(job_id: str, body: TranslationUpdateRequest) -> PipelineJobResponse:
         job = _get_job_or_404(job_id)
         translated_path, _ = _translated_paths(job)
@@ -383,6 +411,83 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         )
         return PipelineJobResponse(**job.to_response())
 
+    @app.post("/api/pipeline/jobs/{job_id}/tts", response_model=PipelineJobResponse)
+    async def regenerate_audio(job_id: str, body: SpeakersSubmitRequest) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id)
+        if not body.speakers_json.strip():
+            raise HTTPException(status_code=400, detail="speakers_json is required")
+        run_dir_value = job.result.get("run_dir") if job.result else None
+        if not run_dir_value:
+            raise HTTPException(status_code=400, detail="Run directory not available")
+        run_dir = Path(run_dir_value)
+        _, translated_text = _translated_paths(job)
+
+        speakers = _parse_speaker_configs(body.speakers_json, config.settings.project_root)
+        speakers_path = run_dir / "speakers.json"
+        speakers_path.write_text(
+            json.dumps(speakers, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        job.steps.append(
+            StepEvent(step="tts", status="running", message="Regenerating audio", detail=None)
+        )
+        queue.save_state()
+
+        tts_client = MCPToolClient(config.services["tts"])
+        audio_output_path = run_dir / "audio.wav"
+        tts_result = await tts_client.call_tool(
+            "clone_voice",
+            {
+                "text": normalize_translation_text(translated_text),
+                "speaker_configs_json": json.dumps(speakers, ensure_ascii=False),
+                "speed": 1.0,
+                "output_path": str(audio_output_path),
+            },
+        )
+        if not tts_result.get("success"):
+            error = tts_result.get("error", "Audio regeneration failed")
+            job.steps.append(
+                StepEvent(step="tts", status="failed", message="Audio regeneration failed", detail=error)
+            )
+            queue.save_state()
+            raise HTTPException(status_code=500, detail=error)
+
+        audio_url = job.result.get("audio_url") if job.result else None
+        speakers_url = job.result.get("speakers_url") if job.result else None
+        if s3_client.enabled:
+            run_prefix = run_dir.name
+            speakers_uploaded = s3_client.upload_file(
+                str(speakers_path), f"{run_prefix}/{speakers_path.name}"
+            )
+            if speakers_uploaded:
+                speakers_url = speakers_uploaded.url
+            audio_uploaded = s3_client.upload_file(
+                str(audio_output_path), f"{run_prefix}/{audio_output_path.name}"
+            )
+            if audio_uploaded:
+                audio_url = audio_uploaded.url
+
+        job.steps.append(
+            StepEvent(
+                step="tts",
+                status="completed",
+                message="Audio regenerated",
+                detail=_relative_to_output(audio_output_path),
+            )
+        )
+        job = queue.update_job_result(
+            job_id,
+            {
+                "audio_path": str(audio_output_path),
+                "audio_relative": _relative_to_output(audio_output_path),
+                "audio_url": audio_url,
+                "speakers_path": str(speakers_path),
+                "speakers_relative": _relative_to_output(speakers_path),
+                "speakers_url": speakers_url,
+            },
+        )
+        return PipelineJobResponse(**job.to_response())
+
     @app.get("/api/artifacts/download")
     def download_artifact(
         path: str = Query(..., description="Relative path under output/ or runs/"),
@@ -399,7 +504,15 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         full = _allowed_path(path)
         if not full.is_file() or full.suffix.lower() != ".txt":
             raise HTTPException(status_code=400, detail="Not a summary text file")
-        return PlainTextResponse(full.read_text(encoding="utf-8"))
+#        return PlainTextResponse(full.read_text(encoding="utf-8"))
+        text = full.read_text(encoding="utf-8")
+        return Response(
+            content=text,
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Content-Length": str(len(text.encode("utf-8")))
+            },
+        )
 
     @app.get("/api/artifacts/preview/audio")
     def preview_audio(
