@@ -5,6 +5,8 @@ End-to-end pipeline that turns a YouTube link (or audio URL/path) into:
 - A Chinese summary text (`.txt`)
 - A Chinese multi-speaker audio (`.wav`) generated from the translated transcript
 
+![workflow](docs/workflow.jpeg)
+
 The app orchestrates multiple MCP services:
 
 - **InnoFranceYTAudioExtractor** — YouTube audio download
