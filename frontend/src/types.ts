@@ -70,6 +70,8 @@ export interface SettingsResponse {
   tags: string[];
   provider_availability: Record<string, boolean>;
   provider_key_source: Record<string, string>;
+  asset_options: Record<string, { id: string; label: string }[]>;
+  asset_selections: Record<string, string>;
 }
 
 export interface PipelineStartRequest {

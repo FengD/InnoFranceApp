@@ -34,6 +34,7 @@ export async function updateSettings(body: {
   max_concurrent?: number;
   tags?: string[];
   api_keys?: Record<string, string>;
+  asset_selections?: Record<string, string>;
 }): Promise<SettingsResponse> {
   return request("/api/settings", {
     method: "POST",
@@ -223,4 +224,24 @@ export function previewAudioUrl(path: string): string {
 
 export function exportJobUrl(jobId: string): string {
   return `${API_BASE}/api/pipeline/jobs/${jobId}/export`;
+}
+
+export async function uploadAsset(
+  assetType: "start_music" | "beginning",
+  file: File
+): Promise<{ success: boolean; filename?: string }> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(
+    `${API_BASE}/api/assets/upload?asset_type=${encodeURIComponent(assetType)}`,
+    {
+      method: "POST",
+      body: form,
+    }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error((err as { detail?: string }).detail ?? "Upload failed");
+  }
+  return res.json() as Promise<{ success: boolean; filename?: string }>;
 }

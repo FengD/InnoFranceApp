@@ -131,6 +131,7 @@ class PipelineQueue:
         self._queue_order: list[str] = []
         self._tags: list[str] = []
         self._api_keys: dict[str, str] = {}
+        self._asset_selections: dict[str, str] = {}
         self._save_task: Optional[asyncio.Task[None]] = None
         self._save_pending = False
         self._lock = asyncio.Lock()
@@ -193,6 +194,22 @@ class PipelineQueue:
 
     def get_api_key(self, provider: str) -> Optional[str]:
         return self._api_keys.get(provider)
+
+    @property
+    def asset_selections(self) -> dict[str, str]:
+        return dict(self._asset_selections)
+
+    @asset_selections.setter
+    def asset_selections(self, value: dict[str, str]) -> None:
+        normalized: dict[str, str] = {}
+        for key, raw in (value or {}).items():
+            name = str(key).strip()
+            if not name:
+                continue
+            val = str(raw).strip()
+            if val:
+                normalized[name] = val
+        self._asset_selections = normalized
 
     def _queue_position(self, job_id: str) -> Optional[int]:
         try:
@@ -546,6 +563,9 @@ class PipelineQueue:
             api_keys = settings.get("api_keys")
             if isinstance(api_keys, dict):
                 self.api_keys = {str(k): str(v) for k, v in api_keys.items()}
+            asset_selections = settings.get("asset_selections")
+            if isinstance(asset_selections, dict):
+                self.asset_selections = {str(k): str(v) for k, v in asset_selections.items()}
         stored_queue = data.get("queue_order") if isinstance(data, dict) else None
         if isinstance(stored_queue, list):
             self._queue_order = [str(item) for item in stored_queue if item]
@@ -578,6 +598,7 @@ class PipelineQueue:
                 "max_concurrent": self._max_concurrent,
                 "tags": list(self._tags),
                 "api_keys": dict(self._api_keys),
+                "asset_selections": dict(self._asset_selections),
             },
             "queue_order": list(self._queue_order),
             "jobs": [job.to_state() for job in self._jobs.values()],

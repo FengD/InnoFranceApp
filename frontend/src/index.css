@@ -259,6 +259,21 @@ a:hover {
   color: var(--success);
 }
 
+.asset-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.asset-row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+}
+
 .tag-chip {
   display: inline-flex;
   align-items: center;

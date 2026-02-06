@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { uploadAsset } from "../api";
 import type { SettingsResponse } from "../types";
 
 interface SettingsPanelProps {
@@ -22,6 +23,11 @@ export function SettingsPanel({
   const [tags, setTags] = useState<string[]>(settings.tags ?? []);
   const [tagInput, setTagInput] = useState("");
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
+  const [assetSelections, setAssetSelections] = useState<Record<string, string>>(
+    settings.asset_selections ?? {}
+  );
+  const [uploadingAsset, setUploadingAsset] = useState<string | null>(null);
+  const [assetError, setAssetError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
@@ -37,6 +43,7 @@ export function SettingsPanel({
         max_concurrent: maxConcurrent,
         tags,
         api_keys: Object.keys(trimmedKeys).length ? trimmedKeys : undefined,
+        asset_selections: assetSelections,
       });
       onClose();
     } finally {
@@ -127,6 +134,104 @@ export function SettingsPanel({
               );
             })}
           </div>
+        </div>
+        <div className="form-group">
+          <label>Intro assets</label>
+          <p className="muted" style={{ marginTop: "0.25rem" }}>
+            Upload your own intro music and beginning clip. Default assets remain available.
+          </p>
+          <div className="asset-row">
+            <div className="asset-row-header">
+              <span>Start music</span>
+              <input
+                type="file"
+                accept=".wav,audio/wav"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  setUploadingAsset("start_music");
+                  setAssetError(null);
+                  try {
+                    await uploadAsset("start_music", file);
+                    await onUpdate({});
+                  } catch (err) {
+                    setAssetError(
+                      err instanceof Error ? err.message : "Failed to upload asset"
+                    );
+                  } finally {
+                    setUploadingAsset(null);
+                    e.currentTarget.value = "";
+                  }
+                }}
+              />
+            </div>
+            <select
+              value={assetSelections.start_music ?? "default"}
+              onChange={(e) =>
+                setAssetSelections((prev) => ({
+                  ...prev,
+                  start_music: e.target.value,
+                }))
+              }
+            >
+              {(settings.asset_options?.start_music ?? []).map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="asset-row">
+            <div className="asset-row-header">
+              <span>Beginning</span>
+              <input
+                type="file"
+                accept=".wav,audio/wav"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  setUploadingAsset("beginning");
+                  setAssetError(null);
+                  try {
+                    await uploadAsset("beginning", file);
+                    await onUpdate({});
+                  } catch (err) {
+                    setAssetError(
+                      err instanceof Error ? err.message : "Failed to upload asset"
+                    );
+                  } finally {
+                    setUploadingAsset(null);
+                    e.currentTarget.value = "";
+                  }
+                }}
+              />
+            </div>
+            <select
+              value={assetSelections.beginning ?? "default"}
+              onChange={(e) =>
+                setAssetSelections((prev) => ({
+                  ...prev,
+                  beginning: e.target.value,
+                }))
+              }
+            >
+              {(settings.asset_options?.beginning ?? []).map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          {uploadingAsset && (
+            <p className="muted" style={{ marginTop: "0.5rem" }}>
+              Uploading…
+            </p>
+          )}
+          {assetError && (
+            <p className="muted" style={{ marginTop: "0.5rem" }}>
+              {assetError}
+            </p>
+          )}
         </div>
         <div className="form-group">
           <label htmlFor="tag-input">Tags</label>

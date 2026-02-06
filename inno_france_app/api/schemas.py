@@ -61,6 +61,8 @@ class SettingsResponse(BaseModel):
     tags: list[str] = Field(default_factory=list)
     provider_availability: dict[str, bool] = Field(default_factory=dict)
     provider_key_source: dict[str, str] = Field(default_factory=dict)
+    asset_options: dict[str, list[dict[str, str]]] = Field(default_factory=dict)
+    asset_selections: dict[str, str] = Field(default_factory=dict)
 
 
 class SettingsUpdate(BaseModel):
@@ -68,6 +70,7 @@ class SettingsUpdate(BaseModel):
     max_concurrent: Optional[int] = None
     tags: Optional[list[str]] = None
     api_keys: Optional[dict[str, str]] = None
+    asset_selections: Optional[dict[str, str]] = None
 
 
 class SpeakersSubmitRequest(BaseModel):

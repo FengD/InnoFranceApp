@@ -91,6 +91,59 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             pass
         return path.name
 
+    def _assets_root() -> Path:
+        return config.settings.project_root / "InnoFranceApp" / "assets"
+
+    def _asset_custom_dir(asset_type: str) -> Path:
+        return _assets_root() / "custom" / asset_type
+
+    def _default_asset_filename(asset_type: str) -> str:
+        return "start_music.wav" if asset_type == "start_music" else "beginning.wav"
+
+    def _asset_selection_for_type(asset_type: str) -> Optional[str]:
+        return queue.asset_selections.get(asset_type)
+
+    def _resolve_asset_for_type(asset_type: str) -> Path:
+        selection = _asset_selection_for_type(asset_type)
+        if selection and selection.startswith("custom:"):
+            filename = selection.split(":", 1)[1]
+            candidate = _asset_custom_dir(asset_type) / filename
+            if candidate.exists():
+                return candidate
+        default_name = _default_asset_filename(asset_type)
+        assets_dir = _assets_root()
+        candidate = assets_dir / default_name
+        if candidate.exists():
+            return candidate
+        fallback = config.settings.project_root / "InnoFrance" / default_name
+        if fallback.exists():
+            return fallback
+        raise HTTPException(status_code=404, detail=f"Asset not found: {default_name}")
+
+    def _list_asset_options(asset_type: str) -> list[dict[str, str]]:
+        options: list[dict[str, str]] = []
+        default_name = _default_asset_filename(asset_type)
+        try:
+            _resolve_asset_for_type(asset_type)
+            options.append(
+                {
+                    "id": "default",
+                    "label": f"Default ({default_name})",
+                }
+            )
+        except HTTPException:
+            pass
+        custom_dir = _asset_custom_dir(asset_type)
+        if custom_dir.exists():
+            for path in sorted(custom_dir.glob("*.wav")):
+                options.append({"id": f"custom:{path.name}", "label": path.name})
+        return options
+
+    def _safe_asset_filename(filename: str) -> str:
+        name = re.sub(r"[^a-zA-Z0-9._-]+", "_", Path(filename).name)
+        name = name.strip("._")
+        return name or f"asset_{uuid.uuid4().hex}.wav"
+
     def _provider_key_env(provider: str) -> Optional[str]:
         mapping = {
             "openai": "OPENAI_API_KEY",
@@ -276,6 +329,10 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         providers = ["openai", "deepseek", "qwen", "glm", "ollama", "sglang", "vllm"]
         availability = {p: _provider_available(p) for p in providers}
         sources = {p: _provider_key_source(p) for p in providers}
+        asset_options = {
+            "start_music": _list_asset_options("start_music"),
+            "beginning": _list_asset_options("beginning"),
+        }
         return SettingsResponse(
             parallel_enabled=queue.parallel_enabled,
             max_concurrent=queue.max_concurrent,
@@ -283,6 +340,8 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             tags=queue.tags,
             provider_availability=availability,
             provider_key_source=sources,
+            asset_options=asset_options,
+            asset_selections=queue.asset_selections,
         )
 
     @app.post("/api/settings", response_model=SettingsResponse)
@@ -297,6 +356,10 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             merged = queue.api_keys
             merged.update(body.api_keys)
             queue.api_keys = merged
+        if body.asset_selections is not None:
+            merged = queue.asset_selections
+            merged.update(body.asset_selections)
+            queue.asset_selections = merged
         queue.save_state()
         return get_settings()
 
@@ -542,8 +605,8 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         run_dir = Path(run_dir_value)
         output_path = run_dir / "final_audio.wav"
         inputs = [
-            _resolve_asset_path("start_music.wav"),
-            _resolve_asset_path("beginning.wav"),
+            _resolve_asset_for_type("start_music"),
+            _resolve_asset_for_type("beginning"),
             Path(summary_audio_value),
             Path(audio_path_value),
         ]
@@ -661,6 +724,21 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         base_name = job.custom_name or Path(job.result.get("run_dir", "")).name
         filename = f"{_sanitize_export_name(base_name)}.zip"
         return FileResponse(export_path, filename=filename)
+
+
+    @app.post("/api/assets/upload")
+    def upload_asset(asset_type: str = Query(..., regex="^(start_music|beginning)$"), file: UploadFile = File(...)):
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="Missing filename")
+        if Path(file.filename).suffix.lower() != ".wav":
+            raise HTTPException(status_code=400, detail="Only .wav files are supported")
+        target_dir = _asset_custom_dir(asset_type)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = _safe_asset_filename(file.filename)
+        target = target_dir / safe_name
+        with open(target, "wb") as out:
+            shutil.copyfileobj(file.file, out)
+        return {"success": True, "filename": target.name}
 
     @app.get("/api/artifacts/download")
     def download_artifact(
