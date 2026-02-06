@@ -59,12 +59,15 @@ class SettingsResponse(BaseModel):
     max_concurrent: int
     max_queued: int
     tags: list[str] = Field(default_factory=list)
+    provider_availability: dict[str, bool] = Field(default_factory=dict)
+    provider_key_source: dict[str, str] = Field(default_factory=dict)
 
 
 class SettingsUpdate(BaseModel):
     parallel_enabled: Optional[bool] = None
     max_concurrent: Optional[int] = None
     tags: Optional[list[str]] = None
+    api_keys: Optional[dict[str, str]] = None
 
 
 class SpeakersSubmitRequest(BaseModel):

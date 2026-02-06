@@ -351,6 +351,7 @@ function App() {
                 .length >= (settings?.max_queued ?? 3)
             }
             maxQueued={settings?.max_queued ?? 3}
+            providerAvailability={settings?.provider_availability ?? {}}
           />
         </section>
 

@@ -33,6 +33,7 @@ export async function updateSettings(body: {
   parallel_enabled?: boolean;
   max_concurrent?: number;
   tags?: string[];
+  api_keys?: Record<string, string>;
 }): Promise<SettingsResponse> {
   return request("/api/settings", {
     method: "POST",

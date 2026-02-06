@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -89,6 +90,30 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         except ValueError:
             pass
         return path.name
+
+    def _provider_key_env(provider: str) -> Optional[str]:
+        mapping = {
+            "openai": "OPENAI_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY",
+            "qwen": "DASHSCOPE_API_KEY",
+            "glm": "ZHIPUAI_API_KEY",
+            "vllm": "VLLM_API_KEY",
+            "sglang": "SGLANG_API_KEY",
+        }
+        return mapping.get(provider)
+
+    def _provider_key_source(provider: str) -> str:
+        if provider in {"ollama", "vllm", "sglang"}:
+            return "local"
+        if queue.get_api_key(provider):
+            return "setting"
+        env_name = _provider_key_env(provider)
+        if env_name and os.getenv(env_name):
+            return "env"
+        return "none"
+
+    def _provider_available(provider: str) -> bool:
+        return _provider_key_source(provider) != "none"
 
     def _sanitize_export_name(value: str) -> str:
         cleaned = value.strip().lower()
@@ -248,11 +273,16 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
 
     @app.get("/api/settings", response_model=SettingsResponse)
     def get_settings() -> SettingsResponse:
+        providers = ["openai", "deepseek", "qwen", "glm", "ollama", "sglang", "vllm"]
+        availability = {p: _provider_available(p) for p in providers}
+        sources = {p: _provider_key_source(p) for p in providers}
         return SettingsResponse(
             parallel_enabled=queue.parallel_enabled,
             max_concurrent=queue.max_concurrent,
             max_queued=PipelineQueue.MAX_QUEUED,
             tags=queue.tags,
+            provider_availability=availability,
+            provider_key_source=sources,
         )
 
     @app.post("/api/settings", response_model=SettingsResponse)
@@ -263,6 +293,10 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             queue.max_concurrent = body.max_concurrent
         if body.tags is not None:
             queue.tags = body.tags
+        if body.api_keys is not None:
+            merged = queue.api_keys
+            merged.update(body.api_keys)
+            queue.api_keys = merged
         queue.save_state()
         return get_settings()
 

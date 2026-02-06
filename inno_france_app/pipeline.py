@@ -59,6 +59,7 @@ class InnoFrancePipeline:
         yt_cookies_from_browser: Optional[str] = None,
         yt_user_agent: Optional[str] = None,
         yt_proxy: Optional[str] = None,
+        provider_api_key: Optional[str] = None,
         on_progress: Optional[Callable[[str, str, str, Optional[str]], None]] = None,
         manual_speakers: bool = False,
         speaker_future: Optional[asyncio.Future[str]] = None,
@@ -178,6 +179,7 @@ class InnoFrancePipeline:
                 "provider": provider,
                 "model_name": model_name,
                 "prompt_type": "translate",
+                "api_key": provider_api_key,
             },
         )
         _ensure_success(translation_result, "Translation failed")
@@ -204,6 +206,7 @@ class InnoFrancePipeline:
                 "provider": provider,
                 "model_name": model_name,
                 "prompt_type": "summary",
+                "api_key": provider_api_key,
             },
         )
         _ensure_success(summary_result, "Summary generation failed")

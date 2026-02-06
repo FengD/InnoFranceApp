@@ -130,6 +130,7 @@ class PipelineQueue:
         self._running: set[str] = set()
         self._queue_order: list[str] = []
         self._tags: list[str] = []
+        self._api_keys: dict[str, str] = {}
         self._save_task: Optional[asyncio.Task[None]] = None
         self._save_pending = False
         self._lock = asyncio.Lock()
@@ -173,6 +174,25 @@ class PipelineQueue:
             if label not in normalized:
                 normalized.append(label)
         self._tags = normalized
+
+    @property
+    def api_keys(self) -> dict[str, str]:
+        return dict(self._api_keys)
+
+    @api_keys.setter
+    def api_keys(self, value: dict[str, str]) -> None:
+        normalized: dict[str, str] = {}
+        for key, raw in (value or {}).items():
+            name = str(key).strip()
+            if not name:
+                continue
+            val = str(raw).strip()
+            if val:
+                normalized[name] = val
+        self._api_keys = normalized
+
+    def get_api_key(self, provider: str) -> Optional[str]:
+        return self._api_keys.get(provider)
 
     def _queue_position(self, job_id: str) -> Optional[int]:
         try:
@@ -324,6 +344,7 @@ class PipelineQueue:
                 yt_cookies_from_browser=req.yt_cookies_from_browser,
                 yt_user_agent=req.yt_user_agent,
                 yt_proxy=req.yt_proxy,
+                provider_api_key=self.get_api_key(req.provider),
                 on_progress=on_progress,
                 manual_speakers=req.manual_speakers,
                 speaker_future=job._speaker_future,
@@ -522,6 +543,9 @@ class PipelineQueue:
             tags = settings.get("tags")
             if isinstance(tags, list):
                 self.tags = [str(t) for t in tags if str(t).strip()]
+            api_keys = settings.get("api_keys")
+            if isinstance(api_keys, dict):
+                self.api_keys = {str(k): str(v) for k, v in api_keys.items()}
         stored_queue = data.get("queue_order") if isinstance(data, dict) else None
         if isinstance(stored_queue, list):
             self._queue_order = [str(item) for item in stored_queue if item]
@@ -553,6 +577,7 @@ class PipelineQueue:
                 "parallel_enabled": self._parallel_enabled,
                 "max_concurrent": self._max_concurrent,
                 "tags": list(self._tags),
+                "api_keys": dict(self._api_keys),
             },
             "queue_order": list(self._queue_order),
             "jobs": [job.to_state() for job in self._jobs.values()],

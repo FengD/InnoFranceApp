@@ -8,12 +8,14 @@ interface PipelineFormProps {
   onStart: (body: PipelineStartRequest) => Promise<void>;
   disabled: boolean;
   maxQueued: number;
+  providerAvailability?: Record<string, boolean>;
 }
 
 export function PipelineForm({
   onStart,
   disabled,
   maxQueued,
+  providerAvailability = {},
 }: PipelineFormProps) {
   const [sourceType, setSourceType] = useState<SourceType>("youtube");
   const [youtubeUrl, setYoutubeUrl] = useState("");
@@ -129,13 +131,30 @@ export function PipelineForm({
             value={provider}
             onChange={(e) => setProvider(e.target.value)}
           >
-            <option value="openai">OpenAI</option>
-            <option value="deepseek">DeepSeek</option>
-            <option value="ollama">Ollama</option>
-            <option value="qwen">Qwen</option>
-            <option value="glm">GLM</option>
-            <option value="sglang">SGLang</option>
-            <option value="vllm">vLLM</option>
+            {[
+              { key: "openai", label: "OpenAI", needsKey: true },
+              { key: "deepseek", label: "DeepSeek", needsKey: true },
+              { key: "qwen", label: "Qwen", needsKey: true },
+              { key: "glm", label: "GLM", needsKey: true },
+              { key: "ollama", label: "Ollama", needsKey: false },
+              { key: "sglang", label: "SGLang", needsKey: false },
+              { key: "vllm", label: "vLLM", needsKey: false },
+            ].map((providerItem) => {
+              const available =
+                providerAvailability[providerItem.key] ?? !providerItem.needsKey;
+              const label = available
+                ? providerItem.label
+                : `${providerItem.label} (API key required)`;
+              return (
+                <option
+                  key={providerItem.key}
+                  value={providerItem.key}
+                  disabled={!available}
+                >
+                  {label}
+                </option>
+              );
+            })}
           </select>
         </div>
         <div className="form-group">

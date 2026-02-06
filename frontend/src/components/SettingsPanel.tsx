@@ -7,6 +7,7 @@ interface SettingsPanelProps {
     parallel_enabled?: boolean;
     max_concurrent?: number;
     tags?: string[];
+    api_keys?: Record<string, string>;
   }) => Promise<void>;
   onClose: () => void;
 }
@@ -20,15 +21,22 @@ export function SettingsPanel({
   const [maxConcurrent, setMaxConcurrent] = useState(settings.max_concurrent);
   const [tags, setTags] = useState<string[]>(settings.tags ?? []);
   const [tagInput, setTagInput] = useState("");
+  const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
     setSaving(true);
     try {
+      const trimmedKeys: Record<string, string> = {};
+      Object.entries(apiKeys).forEach(([key, value]) => {
+        const trimmed = value.trim();
+        if (trimmed) trimmedKeys[key] = trimmed;
+      });
       await onUpdate({
         parallel_enabled: parallel,
         max_concurrent: maxConcurrent,
         tags,
+        api_keys: Object.keys(trimmedKeys).length ? trimmedKeys : undefined,
       });
       onClose();
     } finally {
@@ -75,6 +83,50 @@ export function SettingsPanel({
             Applies when parallel execution is enabled. Max queue size is{" "}
             {settings.max_queued} (queued + running).
           </p>
+        </div>
+        <div className="form-group">
+          <label>Provider API keys</label>
+          <p className="muted" style={{ marginTop: "0.25rem" }}>
+            Required for cloud providers. Local providers (Ollama/SGLang/VLLM) work without keys.
+          </p>
+          <div className="api-key-list">
+            {[
+              { key: "openai", label: "OpenAI", required: true },
+              { key: "deepseek", label: "DeepSeek", required: true },
+              { key: "qwen", label: "Qwen", required: true },
+              { key: "glm", label: "GLM", required: true },
+            ].map((provider) => {
+              const source = settings.provider_key_source?.[provider.key] ?? "none";
+              const statusLabel =
+                source === "setting"
+                  ? "Configured"
+                  : source === "env"
+                    ? "Env"
+                    : "Missing";
+              return (
+                <div key={provider.key} className="api-key-row">
+                  <div className="api-key-label">
+                    <span>{provider.label}</span>
+                    <span
+                      className={`api-key-status${
+                        source === "setting" || source === "env" ? " is-active" : ""
+                      }`}
+                    >
+                      {statusLabel}
+                    </span>
+                  </div>
+                  <input
+                    type="password"
+                    placeholder="Set API key"
+                    value={apiKeys[provider.key] ?? ""}
+                    onChange={(e) =>
+                      setApiKeys((prev) => ({ ...prev, [provider.key]: e.target.value }))
+                    }
+                  />
+                </div>
+              );
+            })}
+          </div>
         </div>
         <div className="form-group">
           <label htmlFor="tag-input">Tags</label>

@@ -68,6 +68,8 @@ export interface SettingsResponse {
   max_concurrent: number;
   max_queued: number;
   tags: string[];
+  provider_availability: Record<string, boolean>;
+  provider_key_source: Record<string, string>;
 }
 
 export interface PipelineStartRequest {
