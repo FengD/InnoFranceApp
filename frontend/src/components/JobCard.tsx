@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   downloadUrl,
+  exportJobUrl,
   generateSummaryAudio,
   getJobSpeakersTemplate,
   getJobTranslation,
@@ -27,10 +28,24 @@ interface JobCardProps {
   job: PipelineJob;
   onRefresh: () => void;
   onDelete?: () => void;
+  availableTags?: string[];
+  onUpdateMeta?: (patch: {
+    note?: string | null;
+    custom_name?: string | null;
+    tags?: string[];
+    published?: boolean;
+  }) => Promise<void>;
 }
 
-export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
+export function JobCard({
+  job,
+  onRefresh,
+  onDelete,
+  availableTags = [],
+  onUpdateMeta,
+}: JobCardProps) {
   const [showDetails, setShowDetails] = useState(false);
+  const [outputsOpen, setOutputsOpen] = useState(false);
   const [previewSummary, setPreviewSummary] = useState(false);
   const [previewAudio, setPreviewAudio] = useState(false);
   const [summaryText, setSummaryText] = useState("");
@@ -57,6 +72,17 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
   const [regenBusy, setRegenBusy] = useState(false);
   const [regenError, setRegenError] = useState<string | null>(null);
   const [showSpeakerClips, setShowSpeakerClips] = useState(false);
+  const [noteText, setNoteText] = useState(job.note ?? "");
+  const [noteDirty, setNoteDirty] = useState(false);
+  const [noteSaving, setNoteSaving] = useState(false);
+  const [noteError, setNoteError] = useState<string | null>(null);
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [nameInput, setNameInput] = useState(job.custom_name ?? "");
+  const [tagSaving, setTagSaving] = useState(false);
+  const [tagError, setTagError] = useState<string | null>(null);
+  const [publishedSaving, setPublishedSaving] = useState(false);
+  const [publishedError, setPublishedError] = useState<string | null>(null);
 
   const stepMap = useMemo(() => {
     const map = new Map<string, typeof job.steps[number]>();
@@ -145,6 +171,24 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
   useEffect(() => {
     setSpeakerTemplateLoaded(false);
   }, [job.job_id]);
+
+  useEffect(() => {
+    setOutputsOpen(false);
+    setPreviewSummary(false);
+    setPreviewAudio(false);
+    setShowRegenerate(false);
+    setShowSpeakerClips(false);
+    setNoteText(job.note ?? "");
+    setNoteDirty(false);
+    setNoteOpen(false);
+    setNameInput(job.custom_name ?? "");
+  }, [job.job_id]);
+
+  useEffect(() => {
+    setNoteText(job.note ?? "");
+    setNoteDirty(false);
+    setNameInput(job.custom_name ?? "");
+  }, [job.note, job.custom_name]);
 
   const fetchSpeakerTemplate = useCallback(async () => {
     setSpeakerTemplateLoading(true);
@@ -290,10 +334,85 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
     }
   };
 
+  const handleSaveNote = async () => {
+    if (!onUpdateMeta) return;
+    setNoteSaving(true);
+    setNoteError(null);
+    try {
+      await onUpdateMeta({ note: noteText });
+      setNoteDirty(false);
+      setNoteOpen(false);
+    } catch (err) {
+      setNoteError(err instanceof Error ? err.message : "Failed to save note");
+    } finally {
+      setNoteSaving(false);
+    }
+  };
+
+  const handleSaveName = async () => {
+    if (!onUpdateMeta) return;
+    try {
+      await onUpdateMeta({ custom_name: nameInput });
+      setRenameOpen(false);
+    } catch {
+      // ignore, error handled at parent
+    }
+  };
+
+  const handleToggleTag = async (tag: string) => {
+    if (!onUpdateMeta) return;
+    const current = new Set(job.tags ?? []);
+    if (current.has(tag)) {
+      current.delete(tag);
+    } else {
+      current.add(tag);
+    }
+    setTagSaving(true);
+    setTagError(null);
+    try {
+      await onUpdateMeta({ tags: Array.from(current) });
+    } catch (err) {
+      setTagError(err instanceof Error ? err.message : "Failed to update tags");
+    } finally {
+      setTagSaving(false);
+    }
+  };
+
+  const handleTogglePublished = async () => {
+    if (!onUpdateMeta) return;
+    setPublishedSaving(true);
+    setPublishedError(null);
+    try {
+      await onUpdateMeta({ published: !job.published });
+    } catch (err) {
+      setPublishedError(err instanceof Error ? err.message : "Failed to update");
+    } finally {
+      setPublishedSaving(false);
+    }
+  };
+
   return (
     <div className={`job-card job-card--${job.status}`}>
       <div className="job-card-header">
         <div className="job-card-meta">
+          {job.status === "completed" && (
+            <button
+              type="button"
+              className={`publish-toggle${job.published ? " is-published" : ""}`}
+              onClick={handleTogglePublished}
+              disabled={publishedSaving}
+              title="Mark as published"
+            >
+              <span className="publish-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" role="img">
+                  <path
+                    d="M12 2l3 6 6 1-4.5 4.4 1 6.2L12 16l-5.5 3.6 1-6.2L3 9l6-1z"
+                    fill="currentColor"
+                  />
+                </svg>
+              </span>
+            </button>
+          )}
           <span className="job-id" title={job.job_id}>
             {job.job_id.slice(0, 8)}
           </span>
@@ -303,6 +422,27 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
           <span className="job-date">
             {new Date(job.created_at).toLocaleString()}
           </span>
+          {job.status === "completed" && (
+            <>
+              <span className="job-name">
+                {job.custom_name?.trim() ? job.custom_name : "Unnamed"}
+              </span>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setRenameOpen(true)}
+              >
+                Rename
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setNoteOpen(true)}
+              >
+                Note
+              </button>
+            </>
+          )}
         </div>
         {(job.status === "running" || job.status === "queued") && (
           <button
@@ -484,10 +624,53 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
         </div>
       )}
 
+      {job.status === "completed" && (
+        <div className="job-meta">
+          {availableTags.length > 0 && (
+            <div className="job-meta-row">
+              <span className="job-meta-label">Tags</span>
+              <div className="tag-picker">
+                {availableTags.map((tag) => {
+                  const active = (job.tags ?? []).includes(tag);
+                  return (
+                    <button
+                      key={tag}
+                      type="button"
+                      className={`tag-chip${active ? " is-active" : ""}`}
+                      onClick={() => handleToggleTag(tag)}
+                      disabled={tagSaving}
+                    >
+                      {tag}
+                    </button>
+                  );
+                })}
+              </div>
+              {tagError && <span className="muted">{tagError}</span>}
+            </div>
+          )}
+          {publishedError && (
+            <div className="job-meta-row">
+              <span className="muted">{publishedError}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {job.status === "completed" && result && (
         <div className="job-artifacts">
-          <h4>Outputs</h4>
-          <div className="artifact-links">
+          <div className="job-artifacts-header">
+            <h4>Outputs</h4>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setOutputsOpen((v) => !v)}
+              aria-expanded={outputsOpen}
+            >
+              {outputsOpen ? "Collapse" : "Expand"}
+            </button>
+          </div>
+          {outputsOpen && (
+            <div className="artifact-links">
             <div className="artifact-row">
               <span>Summary</span>
               {summaryRelative ? (
@@ -727,6 +910,15 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
               >
                 {mergeBusy ? "Merging…" : "Merge final audio"}
               </button>
+              {mergedAudioRelative && (
+                <a
+                  href={exportJobUrl(job.job_id)}
+                  className="btn btn-ghost btn-sm"
+                  download
+                >
+                  Export zip
+                </a>
+              )}
               {mergedAudioRelative ? (
                 <>
                   <a
@@ -753,6 +945,75 @@ export function JobCard({ job, onRefresh, onDelete }: JobCardProps) {
               ) : (
                 <span className="muted">Not merged yet</span>
               )}
+            </div>
+          </div>
+          )}
+        </div>
+      )}
+
+      {renameOpen && (
+        <div className="rename-modal" role="dialog" aria-label="Rename pipeline">
+          <div className="rename-modal-inner">
+            <h4>Rename pipeline</h4>
+            <input
+              type="text"
+              value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              placeholder="Custom name"
+            />
+            <p className="muted">
+              Used for export zip filename (lowercase, spaces become underscores).
+            </p>
+            <div className="rename-actions">
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={handleSaveName}
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setRenameOpen(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {noteOpen && (
+        <div className="rename-modal" role="dialog" aria-label="Edit note">
+          <div className="rename-modal-inner">
+            <h4>Note</h4>
+            <textarea
+              className="job-note"
+              value={noteText}
+              onChange={(e) => {
+                setNoteText(e.target.value);
+                setNoteDirty(true);
+              }}
+              placeholder="Add a note to recognize this pipeline"
+            />
+            <div className="rename-actions">
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={handleSaveNote}
+                disabled={noteSaving || !noteDirty}
+              >
+                {noteSaving ? "Saving…" : "Save note"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setNoteOpen(false)}
+              >
+                Close
+              </button>
+              {noteError && <span className="muted">{noteError}</span>}
             </div>
           </div>
         </div>

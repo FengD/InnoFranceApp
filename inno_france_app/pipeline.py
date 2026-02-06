@@ -97,7 +97,7 @@ class InnoFrancePipeline:
         _emit("youtube_audio", "running", "Preparing audio source", None)
         if source_kind == "audio_path":
             source_path = Path(audio_path_input or "").expanduser().resolve()
-            audio_path = _copy_audio_to_run(source_path, run_dir)
+            audio_path = await asyncio.to_thread(_copy_audio_to_run, source_path, run_dir)
             base_name = _sanitize_base_name(source_path.name) or base_name
             _emit(
                 "youtube_audio",
@@ -106,7 +106,7 @@ class InnoFrancePipeline:
                 _relative_to_runs(audio_path, runs_dir),
             )
         elif source_kind == "audio_url":
-            audio_path = _download_audio_to_run(audio_url or "", run_dir)
+            audio_path = await asyncio.to_thread(_download_audio_to_run, audio_url or "", run_dir)
             base_name = _sanitize_base_name(Path(audio_path).name) or base_name
             _emit(
                 "youtube_audio",
@@ -625,7 +625,22 @@ async def _detect_speaker_configs(
         label_index = _speaker_index_from_tag(speaker_label)
         index = label_index if label_index is not None else fallback_index
         output_path = run_dir / f"speaker{index}.wav"
-        _extract_audio_clip(audio_path, segment["start"], segment["end"], output_path)
+        try:
+            await asyncio.to_thread(
+                _extract_audio_clip,
+                audio_path,
+                segment["start"],
+                segment["end"],
+                output_path,
+            )
+        except Exception as exc:
+            emit(
+                "speakers",
+                "running",
+                f"Speaker clip extraction failed for {speaker_label}",
+                str(exc),
+            )
+            continue
         speaker_audio_paths.append(output_path)
         emit(
             "speakers",
@@ -634,10 +649,19 @@ async def _detect_speaker_configs(
             _relative_to_runs(output_path, runs_dir),
         )
 
-        result = await speaker_client.call_tool(
-            "detect_speaker",
-            {"audio_path": str(output_path)},
-        )
+        try:
+            result = await speaker_client.call_tool(
+                "detect_speaker",
+                {"audio_path": str(output_path)},
+            )
+        except Exception as exc:
+            emit(
+                "speakers",
+                "running",
+                f"Speaker detect failed for {speaker_label}",
+                str(exc),
+            )
+            result = {"success": False, "error": str(exc)}
         profile = None
         if result.get("success"):
             profiles = result.get("result", [])

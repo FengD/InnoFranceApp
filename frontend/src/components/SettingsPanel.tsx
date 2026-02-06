@@ -6,6 +6,7 @@ interface SettingsPanelProps {
   onUpdate: (patch: {
     parallel_enabled?: boolean;
     max_concurrent?: number;
+    tags?: string[];
   }) => Promise<void>;
   onClose: () => void;
 }
@@ -17,6 +18,8 @@ export function SettingsPanel({
 }: SettingsPanelProps) {
   const [parallel, setParallel] = useState(settings.parallel_enabled);
   const [maxConcurrent, setMaxConcurrent] = useState(settings.max_concurrent);
+  const [tags, setTags] = useState<string[]>(settings.tags ?? []);
+  const [tagInput, setTagInput] = useState("");
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
@@ -25,6 +28,7 @@ export function SettingsPanel({
       await onUpdate({
         parallel_enabled: parallel,
         max_concurrent: maxConcurrent,
+        tags,
       });
       onClose();
     } finally {
@@ -64,11 +68,60 @@ export function SettingsPanel({
             <option value={1}>1</option>
             <option value={2}>2</option>
             <option value={3}>3</option>
+            <option value={4}>4</option>
+            <option value={5}>5</option>
           </select>
           <p className="muted" style={{ marginTop: "0.25rem", marginBottom: 0 }}>
             Applies when parallel execution is enabled. Max queue size is{" "}
             {settings.max_queued} (queued + running).
           </p>
+        </div>
+        <div className="form-group">
+          <label htmlFor="tag-input">Tags</label>
+          <div className="tag-input-row">
+            <input
+              id="tag-input"
+              type="text"
+              value={tagInput}
+              onChange={(e) => setTagInput(e.target.value)}
+              placeholder="Add tag"
+            />
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => {
+                const next = tagInput.trim();
+                if (!next || tags.includes(next)) return;
+                setTags((prev) => [...prev, next]);
+                setTagInput("");
+              }}
+            >
+              Add
+            </button>
+          </div>
+          {tags.length === 0 ? (
+            <p className="muted" style={{ marginTop: "0.5rem" }}>
+              No tags yet. Add some to categorize completed pipelines.
+            </p>
+          ) : (
+            <div className="tag-list">
+              {tags.map((tag) => (
+                <span key={tag} className="tag-chip">
+                  {tag}
+                  <button
+                    type="button"
+                    className="tag-remove"
+                    onClick={() =>
+                      setTags((prev) => prev.filter((item) => item !== tag))
+                    }
+                    aria-label={`Remove tag ${tag}`}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
         <div className="settings-actions">
           <button

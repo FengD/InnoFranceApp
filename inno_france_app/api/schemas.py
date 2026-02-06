@@ -41,6 +41,11 @@ class PipelineJobResponse(BaseModel):
     result: Optional[dict[str, Any]] = None
     speaker_required: bool = False
     speaker_submitted: bool = False
+    queue_position: Optional[int] = None
+    note: Optional[str] = None
+    custom_name: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
+    published: bool = False
 
 
 class PipelineListResponse(BaseModel):
@@ -53,11 +58,13 @@ class SettingsResponse(BaseModel):
     parallel_enabled: bool
     max_concurrent: int
     max_queued: int
+    tags: list[str] = Field(default_factory=list)
 
 
 class SettingsUpdate(BaseModel):
     parallel_enabled: Optional[bool] = None
     max_concurrent: Optional[int] = None
+    tags: Optional[list[str]] = None
 
 
 class SpeakersSubmitRequest(BaseModel):
@@ -70,3 +77,14 @@ class SummaryUpdateRequest(BaseModel):
 
 class TranslationUpdateRequest(BaseModel):
     text: str
+
+
+class QueueReorderRequest(BaseModel):
+    job_ids: list[str]
+
+
+class JobMetaUpdateRequest(BaseModel):
+    note: Optional[str] = None
+    custom_name: Optional[str] = None
+    tags: Optional[list[str]] = None
+    published: Optional[bool] = None

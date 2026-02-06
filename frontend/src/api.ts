@@ -32,6 +32,7 @@ export async function getSettings(): Promise<SettingsResponse> {
 export async function updateSettings(body: {
   parallel_enabled?: boolean;
   max_concurrent?: number;
+  tags?: string[];
 }): Promise<SettingsResponse> {
   return request("/api/settings", {
     method: "POST",
@@ -53,6 +54,28 @@ export async function getJob(jobId: string): Promise<PipelineJob> {
 export async function deleteJob(jobId: string): Promise<PipelineJob> {
   return request(`/api/pipeline/jobs/${jobId}`, {
     method: "DELETE",
+  });
+}
+
+export async function reorderQueue(jobIds: string[]): Promise<PipelineListResponse> {
+  return request("/api/pipeline/queue/reorder", {
+    method: "POST",
+    body: JSON.stringify({ job_ids: jobIds }),
+  });
+}
+
+export async function updateJobMetadata(
+  jobId: string,
+  body: {
+    note?: string | null;
+    custom_name?: string | null;
+    tags?: string[];
+    published?: boolean;
+  }
+): Promise<PipelineJob> {
+  return request(`/api/pipeline/jobs/${jobId}/metadata`, {
+    method: "POST",
+    body: JSON.stringify(body),
   });
 }
 
@@ -195,4 +218,8 @@ export function previewSummaryUrl(path: string): string {
 
 export function previewAudioUrl(path: string): string {
   return `${API_BASE}/api/artifacts/preview/audio?path=${encodeURIComponent(path)}`;
+}
+
+export function exportJobUrl(jobId: string): string {
+  return `${API_BASE}/api/pipeline/jobs/${jobId}/export`;
 }

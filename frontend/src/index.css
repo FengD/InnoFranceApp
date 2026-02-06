@@ -216,6 +216,45 @@ a:hover {
   font-weight: 500;
 }
 
+.tag-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.75rem;
+}
+
+.tag-chip.is-active {
+  border-color: var(--accent);
+  background: rgba(56, 189, 248, 0.15);
+  color: var(--accent);
+}
+
+.tag-remove {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
 .job-list {
   display: flex;
   flex-direction: column;
@@ -223,10 +262,33 @@ a:hover {
 }
 
 .job-card {
-  padding: 1.25rem;
+  padding: 1rem;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
+}
+
+.publish-toggle {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0.25rem;
+}
+
+.publish-toggle.is-published {
+  color: var(--accent);
+}
+
+.publish-icon {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+}
+
+.publish-icon svg {
+  width: 18px;
+  height: 18px;
 }
 
 .job-card--running {
@@ -289,6 +351,11 @@ a:hover {
 .job-date {
   font-size: 0.8125rem;
   color: var(--text-muted);
+}
+
+.job-name {
+  font-size: 0.8125rem;
+  color: var(--text);
 }
 
 .job-progress {
@@ -430,13 +497,21 @@ a:hover {
 }
 
 .job-artifacts {
-  margin-top: 1rem;
-  padding-top: 1rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
   border-top: 1px solid var(--border);
 }
 
+.job-artifacts-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
 .job-artifacts h4 {
-  margin: 0 0 0.75rem;
+  margin: 0;
   font-size: 0.9375rem;
 }
 
@@ -444,6 +519,130 @@ a:hover {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+.job-meta {
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.job-meta-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.job-meta-label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.job-meta-value {
+  font-size: 0.9rem;
+}
+
+.job-note {
+  min-height: 64px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.job-meta-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.tag-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.rename-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.rename-modal-inner {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  width: min(420px, 90vw);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.rename-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
+
+.history-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.history-filters .muted {
+  margin: 0;
+  line-height: 1;
+}
+
+.history-filters .tag-chip {
+  align-self: center;
+}
+
+.job-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 0.75rem;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.theme-light .job-queue {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.job-queue-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.job-queue-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.job-card-draggable.is-dragging {
+  opacity: 0.6;
+}
+
+.job-card-draggable.is-dragover .job-card {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
 }
 
 .artifact-row {

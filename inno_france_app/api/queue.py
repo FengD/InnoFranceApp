@@ -28,8 +28,16 @@ class PipelineJob:
     speaker_required: bool = False
     speaker_submitted: bool = False
     _speaker_future: Optional[asyncio.Future[str]] = None
+    note: Optional[str] = None
+    custom_name: Optional[str] = None
+    tags: list[str] = field(default_factory=list)
+    published: bool = False
 
-    def to_response(self, include_steps: bool = True) -> dict[str, Any]:
+    def to_response(
+        self,
+        include_steps: bool = True,
+        queue_position: Optional[int] = None,
+    ) -> dict[str, Any]:
         return {
             "job_id": self.job_id,
             "status": self.status,
@@ -41,6 +49,11 @@ class PipelineJob:
             "result": self.result,
             "speaker_required": self.speaker_required,
             "speaker_submitted": self.speaker_submitted,
+            "queue_position": queue_position,
+            "note": self.note,
+            "custom_name": self.custom_name,
+            "tags": list(self.tags),
+            "published": self.published,
         }
 
     async def stream_events(self) -> AsyncIterator[StepEvent]:
@@ -66,6 +79,10 @@ class PipelineJob:
             "result": self.result,
             "speaker_required": self.speaker_required,
             "speaker_submitted": self.speaker_submitted,
+            "note": self.note,
+            "custom_name": self.custom_name,
+            "tags": list(self.tags),
+            "published": self.published,
         }
 
     @staticmethod
@@ -88,12 +105,16 @@ class PipelineJob:
             result=payload.get("result"),
             speaker_required=bool(payload.get("speaker_required", False)),
             speaker_submitted=bool(payload.get("speaker_submitted", False)),
+            note=payload.get("note"),
+            custom_name=payload.get("custom_name"),
+            tags=[str(t) for t in payload.get("tags", []) or []],
+            published=bool(payload.get("published", False)),
         )
         return job
 
 
 class PipelineQueue:
-    MAX_QUEUED = 3
+    MAX_QUEUED = 10
 
     def __init__(
         self,
@@ -104,9 +125,13 @@ class PipelineQueue:
         runs_dir: Optional[Path] = None,
     ) -> None:
         self._parallel_enabled = parallel_enabled
-        self._max_concurrent = max(1, min(3, max_concurrent))
+        self._max_concurrent = max(1, min(5, max_concurrent))
         self._jobs: dict[str, PipelineJob] = {}
         self._running: set[str] = set()
+        self._queue_order: list[str] = []
+        self._tags: list[str] = []
+        self._save_task: Optional[asyncio.Task[None]] = None
+        self._save_pending = False
         self._lock = asyncio.Lock()
         self._state_path = state_path
         self._s3_client = s3_client
@@ -127,18 +152,80 @@ class PipelineQueue:
 
     @max_concurrent.setter
     def max_concurrent(self, value: int) -> None:
-        self._max_concurrent = max(1, min(3, value))
+        self._max_concurrent = max(1, min(5, value))
 
     def _slots_available(self) -> int:
         if self._parallel_enabled:
             return self._max_concurrent - len(self._running)
         return 1 - len(self._running) if self._running else 1
 
+    @property
+    def tags(self) -> list[str]:
+        return list(self._tags)
+
+    @tags.setter
+    def tags(self, value: list[str]) -> None:
+        normalized: list[str] = []
+        for item in value:
+            label = str(item).strip()
+            if not label:
+                continue
+            if label not in normalized:
+                normalized.append(label)
+        self._tags = normalized
+
+    def _queue_position(self, job_id: str) -> Optional[int]:
+        try:
+            return self._queue_order.index(job_id)
+        except ValueError:
+            return None
+
+    def queue_position(self, job_id: str) -> Optional[int]:
+        return self._queue_position(job_id)
+
+    def _can_start(self, job_id: str) -> bool:
+        slots = self._slots_available()
+        if slots <= 0:
+            return False
+        if job_id not in self._queue_order:
+            return True
+        allowed = self._queue_order[: (slots if self._parallel_enabled else 1)]
+        return job_id in allowed
+
     def list_jobs(self, include_steps: bool = True) -> list[dict[str, Any]]:
-        return [
-            j.to_response(include_steps=include_steps)
-            for j in sorted(self._jobs.values(), key=lambda x: x.created_at)
+        response: list[dict[str, Any]] = []
+        ordered_ids: list[str] = []
+        ordered_ids.extend([jid for jid in self._queue_order if jid in self._jobs])
+        running = [
+            j.job_id
+            for j in sorted(
+                self._jobs.values(),
+                key=lambda x: x.started_at or x.created_at,
+            )
+            if j.status == "running" and j.job_id not in ordered_ids
         ]
+        ordered_ids.extend(running)
+        remaining = [
+            j.job_id
+            for j in sorted(
+                self._jobs.values(),
+                key=lambda x: x.finished_at or x.created_at,
+                reverse=True,
+            )
+            if j.job_id not in ordered_ids
+        ]
+        ordered_ids.extend(remaining)
+        for job_id in ordered_ids:
+            job = self._jobs.get(job_id)
+            if not job:
+                continue
+            response.append(
+                job.to_response(
+                    include_steps=include_steps,
+                    queue_position=self._queue_position(job_id),
+                )
+            )
+        return response
 
     def get_job(self, job_id: str) -> Optional[PipelineJob]:
         return self._jobs.get(job_id)
@@ -190,6 +277,7 @@ class PipelineQueue:
             if req.manual_speakers:
                 job._speaker_future = asyncio.Future()
             self._jobs[job_id] = job
+            self._queue_order.append(job_id)
             self._save_state()
 
         asyncio.create_task(self._run_job(job_id, req, on_progress, progress_queue, config_path))
@@ -209,7 +297,9 @@ class PipelineQueue:
 
         while True:
             async with self._lock:
-                if self._slots_available() > 0:
+                if self._can_start(job_id):
+                    if job_id in self._queue_order:
+                        self._queue_order.remove(job_id)
                     self._running.add(job_id)
                     break
             await asyncio.sleep(0.5)
@@ -343,6 +433,8 @@ class PipelineQueue:
                 pass
             async with self._lock:
                 self._running.discard(job_id)
+                if job_id in self._queue_order:
+                    self._queue_order.remove(job_id)
             self._save_state()
 
     def submit_speakers(self, job_id: str, speakers_json: str) -> PipelineJob:
@@ -373,7 +465,44 @@ class PipelineQueue:
     def delete_job(self, job_id: str) -> None:
         if job_id in self._jobs:
             self._jobs.pop(job_id)
+            if job_id in self._queue_order:
+                self._queue_order.remove(job_id)
+            self._running.discard(job_id)
             self._save_state()
+
+    def update_job_meta(
+        self,
+        job_id: str,
+        note: Optional[str] = None,
+        custom_name: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        published: Optional[bool] = None,
+    ) -> PipelineJob:
+        job = self._jobs.get(job_id)
+        if not job:
+            raise ValueError("Job not found")
+        if note is not None:
+            job.note = note.strip() if note else None
+        if custom_name is not None:
+            job.custom_name = custom_name.strip() if custom_name else None
+        if tags is not None:
+            if self._tags:
+                filtered = [t for t in tags if t in self._tags]
+            else:
+                filtered = tags
+            job.tags = [str(t) for t in filtered if str(t).strip()]
+        if published is not None:
+            job.published = bool(published)
+        self._save_state()
+        return job
+
+    def reorder_queue(self, job_ids: list[str]) -> list[str]:
+        current = [jid for jid in self._queue_order if jid in self._jobs]
+        wanted = [jid for jid in job_ids if jid in current]
+        remaining = [jid for jid in current if jid not in wanted]
+        self._queue_order = wanted + remaining
+        self._save_state()
+        return list(self._queue_order)
 
 
     def save_state(self) -> None:
@@ -389,7 +518,13 @@ class PipelineQueue:
         settings = data.get("settings", {}) if isinstance(data, dict) else {}
         if isinstance(settings, dict):
             self._parallel_enabled = bool(settings.get("parallel_enabled", self._parallel_enabled))
-            self._max_concurrent = max(1, min(3, int(settings.get("max_concurrent", self._max_concurrent))))
+            self._max_concurrent = max(1, min(5, int(settings.get("max_concurrent", self._max_concurrent))))
+            tags = settings.get("tags")
+            if isinstance(tags, list):
+                self.tags = [str(t) for t in tags if str(t).strip()]
+        stored_queue = data.get("queue_order") if isinstance(data, dict) else None
+        if isinstance(stored_queue, list):
+            self._queue_order = [str(item) for item in stored_queue if item]
         for payload in data.get("jobs", []) or []:
             if not isinstance(payload, dict):
                 continue
@@ -399,23 +534,67 @@ class PipelineQueue:
                 job.error = job.error or "Server restarted before completion"
                 job.finished_at = job.finished_at or datetime.utcnow()
             self._jobs[job.job_id] = job
+        if self._queue_order:
+            self._queue_order = [
+                jid
+                for jid in self._queue_order
+                if self._jobs.get(jid, None) and self._jobs[jid].status == "queued"
+            ]
+        if not self._queue_order:
+            self._queue_order = [
+                j.job_id
+                for j in sorted(self._jobs.values(), key=lambda x: x.created_at)
+                if j.status == "queued"
+            ]
+
+    def _build_state_payload(self) -> dict[str, Any]:
+        return {
+            "settings": {
+                "parallel_enabled": self._parallel_enabled,
+                "max_concurrent": self._max_concurrent,
+                "tags": list(self._tags),
+            },
+            "queue_order": list(self._queue_order),
+            "jobs": [job.to_state() for job in self._jobs.values()],
+        }
+
+    def _write_state_payload(self, payload: dict[str, Any]) -> None:
+        if not self._state_path:
+            return
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        self._state_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    async def _save_state_async(self) -> None:
+        while True:
+            payload = self._build_state_payload()
+            try:
+                await asyncio.to_thread(self._write_state_payload, payload)
+            except Exception:
+                return
+            if self._save_pending:
+                self._save_pending = False
+                continue
+            return
 
     def _save_state(self) -> None:
         if not self._state_path:
             return
         try:
-            self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {
-                "settings": {
-                    "parallel_enabled": self._parallel_enabled,
-                    "max_concurrent": self._max_concurrent,
-                },
-                "jobs": [job.to_state() for job in self._jobs.values()],
-            }
-            self._state_path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop:
+            if self._save_task and not self._save_task.done():
+                self._save_pending = True
+                return
+            self._save_task = loop.create_task(self._save_state_async())
+            return
+        try:
+            payload = self._build_state_payload()
+            self._write_state_payload(payload)
         except Exception:
             return
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Optional
 
@@ -23,6 +25,8 @@ from .schemas import (
     PipelineJobResponse,
     PipelineListResponse,
     PipelineStartRequest,
+    JobMetaUpdateRequest,
+    QueueReorderRequest,
     SpeakersSubmitRequest,
     SettingsResponse,
     SettingsUpdate,
@@ -85,6 +89,66 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         except ValueError:
             pass
         return path.name
+
+    def _sanitize_export_name(value: str) -> str:
+        cleaned = value.strip().lower()
+        cleaned = re.sub(r"\s+", "_", cleaned)
+        cleaned = re.sub(r"[^a-z0-9_-]", "_", cleaned)
+        cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+        return cleaned or "pipeline_export"
+
+    def _collect_export_paths(job) -> list[Path]:
+        paths: list[Path] = []
+        if not job.result:
+            return paths
+        for key in (
+            "summary_path",
+            "translated_path",
+            "transcript_path",
+            "speakers_path",
+            "audio_path",
+            "summary_audio_path",
+            "merged_audio_path",
+            "input_audio_path",
+        ):
+            value = job.result.get(key)
+            if isinstance(value, str) and value:
+                path = Path(value)
+                if path.exists() and path.is_file():
+                    paths.append(path)
+        for value in job.result.get("speaker_audio_paths", []) or []:
+            if isinstance(value, str) and value:
+                path = Path(value)
+                if path.exists() and path.is_file():
+                    paths.append(path)
+        return paths
+
+    def _build_export_zip(job) -> Path:
+        if not job.result or not job.result.get("run_dir"):
+            raise HTTPException(status_code=400, detail="Run directory not available")
+        run_dir = Path(job.result["run_dir"])
+        export_path = run_dir / "pipeline_export.zip"
+        paths = _collect_export_paths(job)
+        if not paths:
+            raise HTTPException(status_code=400, detail="No artifacts available for export")
+        metadata = {
+            "job_id": job.job_id,
+            "created_at": job.created_at.isoformat() + "Z",
+            "custom_name": job.custom_name,
+            "note": job.note,
+            "tags": job.tags,
+            "published": job.published,
+        }
+        with zipfile.ZipFile(export_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for path in paths:
+                try:
+                    rel = path.resolve().relative_to(run_dir.resolve())
+                    arcname = str(rel)
+                except ValueError:
+                    arcname = path.name
+                zf.write(path, arcname=arcname)
+            zf.writestr("metadata.json", json.dumps(metadata, ensure_ascii=False, indent=2))
+        return export_path
 
     def _summary_paths(job) -> tuple[Path, str]:
         if not job.result or not job.result.get("summary_path"):
@@ -188,6 +252,7 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             parallel_enabled=queue.parallel_enabled,
             max_concurrent=queue.max_concurrent,
             max_queued=PipelineQueue.MAX_QUEUED,
+            tags=queue.tags,
         )
 
     @app.post("/api/settings", response_model=SettingsResponse)
@@ -196,6 +261,8 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             queue.parallel_enabled = body.parallel_enabled
         if body.max_concurrent is not None:
             queue.max_concurrent = body.max_concurrent
+        if body.tags is not None:
+            queue.tags = body.tags
         queue.save_state()
         return get_settings()
 
@@ -213,7 +280,9 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             job = await queue.enqueue(req, config_path)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        return PipelineJobResponse(**job.to_response())
+        return PipelineJobResponse(
+            **job.to_response(queue_position=queue.queue_position(job.job_id))
+        )
 
     @app.post("/api/uploads/audio")
     def upload_audio(file: UploadFile = File(...)):
@@ -233,13 +302,44 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         job = queue.get_job(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
-        return PipelineJobResponse(**job.to_response())
+        return PipelineJobResponse(
+            **job.to_response(queue_position=queue.queue_position(job.job_id))
+        )
 
     @app.delete("/api/pipeline/jobs/{job_id}", response_model=PipelineJobResponse)
     def delete_pipeline_job(job_id: str) -> PipelineJobResponse:
         job = _get_job_or_404(job_id)
         queue.delete_job(job_id)
-        return PipelineJobResponse(**job.to_response())
+        return PipelineJobResponse(
+            **job.to_response(queue_position=queue.queue_position(job.job_id))
+        )
+
+
+    @app.post("/api/pipeline/queue/reorder", response_model=PipelineListResponse)
+    def reorder_pipeline_queue(body: QueueReorderRequest) -> PipelineListResponse:
+        queue.reorder_queue(body.job_ids)
+        return PipelineListResponse(
+            jobs=[PipelineJobResponse(**j) for j in queue.list_jobs(include_steps=False)],
+            max_concurrent=queue.max_concurrent,
+            parallel_enabled=queue.parallel_enabled,
+        )
+
+
+    @app.post("/api/pipeline/jobs/{job_id}/metadata", response_model=PipelineJobResponse)
+    def update_pipeline_metadata(job_id: str, body: JobMetaUpdateRequest) -> PipelineJobResponse:
+        try:
+            job = queue.update_job_meta(
+                job_id,
+                note=body.note,
+                custom_name=body.custom_name,
+                tags=body.tags,
+                published=body.published,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        return PipelineJobResponse(
+            **job.to_response(queue_position=queue.queue_position(job.job_id))
+        )
 
 
     @app.get("/api/pipeline/jobs/{job_id}/stream")
@@ -264,7 +364,9 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             job = queue.submit_speakers(job_id, body.speakers_json)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        return PipelineJobResponse(**job.to_response())
+        return PipelineJobResponse(
+            **job.to_response(queue_position=queue.queue_position(job.job_id))
+        )
 
     @app.get("/api/pipeline/jobs/{job_id}/speakers-template")
     def get_speakers_template(job_id: str):
@@ -295,7 +397,9 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         if summary_url is not None:
             queue.update_job_result(job_id, {"summary_url": summary_url})
         queue.save_state()
-        return PipelineJobResponse(**job.to_response())
+        return PipelineJobResponse(
+            **job.to_response(queue_position=queue.queue_position(job.job_id))
+        )
 
     @app.get("/api/pipeline/jobs/{job_id}/translated")
     def get_translated(job_id: str):
@@ -320,7 +424,9 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         if translated_url is not None:
             queue.update_job_result(job_id, {"translated_url": translated_url})
         queue.save_state()
-        return PipelineJobResponse(**job.to_response())
+        return PipelineJobResponse(
+            **job.to_response(queue_position=queue.queue_position(job.job_id))
+        )
 
     @app.post("/api/pipeline/jobs/{job_id}/summary-audio", response_model=PipelineJobResponse)
     async def generate_summary_audio(job_id: str) -> PipelineJobResponse:
@@ -382,7 +488,9 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
                 "summary_audio_url": summary_audio_url,
             },
         )
-        return PipelineJobResponse(**job.to_response())
+        return PipelineJobResponse(
+            **job.to_response(queue_position=queue.queue_position(job.job_id))
+        )
 
     @app.post("/api/pipeline/jobs/{job_id}/merge-audio", response_model=PipelineJobResponse)
     def merge_final_audio(job_id: str) -> PipelineJobResponse:
@@ -424,7 +532,9 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
                 "merged_audio_url": merged_audio_url,
             },
         )
-        return PipelineJobResponse(**job.to_response())
+        return PipelineJobResponse(
+            **job.to_response(queue_position=queue.queue_position(job.job_id))
+        )
 
     @app.post("/api/pipeline/jobs/{job_id}/tts", response_model=PipelineJobResponse)
     async def regenerate_audio(job_id: str, body: SpeakersSubmitRequest) -> PipelineJobResponse:
@@ -501,7 +611,22 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
                 "speakers_url": speakers_url,
             },
         )
-        return PipelineJobResponse(**job.to_response())
+        return PipelineJobResponse(
+            **job.to_response(queue_position=queue.queue_position(job.job_id))
+        )
+
+
+    @app.get("/api/pipeline/jobs/{job_id}/export")
+    def export_pipeline(job_id: str):
+        job = _get_job_or_404(job_id)
+        if job.status != "completed":
+            raise HTTPException(status_code=400, detail="Pipeline must be completed to export")
+        if not job.result or not job.result.get("merged_audio_path"):
+            raise HTTPException(status_code=400, detail="Merge audio before exporting")
+        export_path = _build_export_zip(job)
+        base_name = job.custom_name or Path(job.result.get("run_dir", "")).name
+        filename = f"{_sanitize_export_name(base_name)}.zip"
+        return FileResponse(export_path, filename=filename)
 
     @app.get("/api/artifacts/download")
     def download_artifact(

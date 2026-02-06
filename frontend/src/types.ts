@@ -50,6 +50,11 @@ export interface PipelineJob {
   result: PipelineResult | null;
   speaker_required?: boolean;
   speaker_submitted?: boolean;
+  queue_position?: number | null;
+  note?: string | null;
+  custom_name?: string | null;
+  tags?: string[];
+  published?: boolean;
 }
 
 export interface PipelineListResponse {
@@ -62,6 +67,7 @@ export interface SettingsResponse {
   parallel_enabled: boolean;
   max_concurrent: number;
   max_queued: number;
+  tags: string[];
 }
 
 export interface PipelineStartRequest {
