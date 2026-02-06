@@ -426,6 +426,7 @@ class PipelineQueue:
                 "transcript_path": str(result.transcript_path),
                 "input_audio_path": str(result.input_audio_path),
                 "speaker_audio_paths": [str(p) for p in result.speaker_audio_paths],
+                "speaker_clip_segments": getattr(result, "speaker_clip_segments", {}),
                 "summary_name": result.summary_path.name,
                 "audio_name": result.audio_path.name,
                 "translated_relative": str(result.translated_text_path.resolve().relative_to(runs_dir))

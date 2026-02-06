@@ -8,6 +8,7 @@ import {
   getJobSummary,
   mergeFinalAudio,
   previewAudioUrl,
+  redetectSpeakers,
   regenerateJobAudio,
   submitSpeakers,
   updateJobTranslation,
@@ -72,6 +73,8 @@ export function JobCard({
   const [regenBusy, setRegenBusy] = useState(false);
   const [regenError, setRegenError] = useState<string | null>(null);
   const [showSpeakerClips, setShowSpeakerClips] = useState(false);
+  const [redetectBusy, setRedetectBusy] = useState(false);
+  const [redetectError, setRedetectError] = useState<string | null>(null);
   const [noteText, setNoteText] = useState(job.note ?? "");
   const [noteDirty, setNoteDirty] = useState(false);
   const [noteSaving, setNoteSaving] = useState(false);
@@ -331,6 +334,21 @@ export function JobCard({
       onRefresh();
     } finally {
       setMergeBusy(false);
+    }
+  };
+
+  const handleRedetectSpeakers = async () => {
+    setRedetectBusy(true);
+    setRedetectError(null);
+    try {
+      await redetectSpeakers(job.job_id);
+      onRefresh();
+    } catch (err) {
+      setRedetectError(
+        err instanceof Error ? err.message : "Failed to re-detect speakers"
+      );
+    } finally {
+      setRedetectBusy(false);
     }
   };
 
@@ -660,14 +678,24 @@ export function JobCard({
         <div className="job-artifacts">
           <div className="job-artifacts-header">
             <h4>Outputs</h4>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => setOutputsOpen((v) => !v)}
-              aria-expanded={outputsOpen}
-            >
-              {outputsOpen ? "Collapse" : "Expand"}
-            </button>
+            <div className="job-artifacts-actions">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={handleRedetectSpeakers}
+                disabled={redetectBusy}
+              >
+                {redetectBusy ? "Re-selecting…" : "Re-select clips"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setOutputsOpen((v) => !v)}
+                aria-expanded={outputsOpen}
+              >
+                {outputsOpen ? "Collapse" : "Expand"}
+              </button>
+            </div>
           </div>
           {outputsOpen && (
             <div className="artifact-links">
@@ -828,6 +856,14 @@ export function JobCard({
               >
                 {showSpeakerClips ? "Hide" : "Preview"}
               </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={handleRedetectSpeakers}
+                disabled={redetectBusy}
+              >
+                {redetectBusy ? "Re-detecting…" : "Re-detect speakers"}
+              </button>
             </div>
             {showSpeakerClips && (
               <div className="artifact-preview">
@@ -869,6 +905,11 @@ export function JobCard({
                     })}
                   </div>
                 )}
+              </div>
+            )}
+            {redetectError && (
+              <div className="artifact-preview">
+                <span className="muted">{redetectError}</span>
               </div>
             )}
             <div className="artifact-row">

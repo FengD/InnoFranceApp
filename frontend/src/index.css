@@ -555,6 +555,13 @@ a:hover {
   margin-bottom: 0.75rem;
 }
 
+.job-artifacts-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
 .job-artifacts h4 {
   margin: 0;
   font-size: 0.9375rem;
