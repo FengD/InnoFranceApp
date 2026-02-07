@@ -8,7 +8,6 @@ import {
   getJobSummary,
   mergeFinalAudio,
   previewAudioUrl,
-  redetectSpeakers,
   regenerateJobAudio,
   submitSpeakers,
   updateJobTranslation,
@@ -73,8 +72,7 @@ export function JobCard({
   const [regenBusy, setRegenBusy] = useState(false);
   const [regenError, setRegenError] = useState<string | null>(null);
   const [showSpeakerClips, setShowSpeakerClips] = useState(false);
-  const [redetectBusy, setRedetectBusy] = useState(false);
-  const [redetectError, setRedetectError] = useState<string | null>(null);
+  const [clipNonce, setClipNonce] = useState(0);
   const [noteText, setNoteText] = useState(job.note ?? "");
   const [noteDirty, setNoteDirty] = useState(false);
   const [noteSaving, setNoteSaving] = useState(false);
@@ -185,6 +183,7 @@ export function JobCard({
     setNoteDirty(false);
     setNoteOpen(false);
     setNameInput(job.custom_name ?? "");
+    setClipNonce(0);
   }, [job.job_id]);
 
   useEffect(() => {
@@ -337,20 +336,6 @@ export function JobCard({
     }
   };
 
-  const handleRedetectSpeakers = async () => {
-    setRedetectBusy(true);
-    setRedetectError(null);
-    try {
-      await redetectSpeakers(job.job_id);
-      onRefresh();
-    } catch (err) {
-      setRedetectError(
-        err instanceof Error ? err.message : "Failed to re-detect speakers"
-      );
-    } finally {
-      setRedetectBusy(false);
-    }
-  };
 
   const handleSaveNote = async () => {
     if (!onUpdateMeta) return;
@@ -682,14 +667,6 @@ export function JobCard({
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
-                onClick={handleRedetectSpeakers}
-                disabled={redetectBusy}
-              >
-                {redetectBusy ? "Re-selecting…" : "Re-select clips"}
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
                 onClick={() => setOutputsOpen((v) => !v)}
                 aria-expanded={outputsOpen}
               >
@@ -856,14 +833,6 @@ export function JobCard({
               >
                 {showSpeakerClips ? "Hide" : "Preview"}
               </button>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={handleRedetectSpeakers}
-                disabled={redetectBusy}
-              >
-                {redetectBusy ? "Re-detecting…" : "Re-detect speakers"}
-              </button>
             </div>
             {showSpeakerClips && (
               <div className="artifact-preview">
@@ -873,13 +842,22 @@ export function JobCard({
                   <div className="speaker-clips">
                     {speakerAudioRelatives.map((path, index) => {
                       const s3Url = speakerAudioUrls[index];
+                      const tag =
+                        result?.speaker_audio_tags?.[index] ?? `SPEAKER${index}`;
+                      const segment = result?.speaker_clip_segments?.[tag];
+                      const segmentLabel = segment
+                        ? `${formatSeconds(segment.start)}–${formatSeconds(segment.end)}`
+                        : null;
                       return (
                         <div key={path} className="speaker-clip">
                           <div className="speaker-clip-header">
-                            <span>speaker{index}.wav</span>
+                            <span>
+                              {tag.toLowerCase()}.wav
+                              {segmentLabel ? ` (${segmentLabel})` : ""}
+                            </span>
                             <div className="speaker-clip-actions">
                               <a
-                                href={downloadUrl(path)}
+                                href={withNonce(downloadUrl(path), clipNonce)}
                                 download
                                 target="_blank"
                                 rel="noreferrer"
@@ -895,7 +873,7 @@ export function JobCard({
                           </div>
                           <audio
                             controls
-                            src={previewAudioUrl(path)}
+                            src={withNonce(previewAudioUrl(path), clipNonce)}
                             className="preview-audio"
                           >
                             Your browser does not support audio.
@@ -905,11 +883,6 @@ export function JobCard({
                     })}
                   </div>
                 )}
-              </div>
-            )}
-            {redetectError && (
-              <div className="artifact-preview">
-                <span className="muted">{redetectError}</span>
               </div>
             )}
             <div className="artifact-row">
@@ -1078,4 +1051,18 @@ function stripRunsPrefix(detail: string): string {
       return line;
     })
     .join("\n");
+}
+
+function withNonce(url: string, nonce: number): string {
+  if (!nonce) return url;
+  const joiner = url.includes("?") ? "&" : "?";
+  return `${url}${joiner}v=${nonce}`;
+}
+
+function formatSeconds(value: number): string {
+  if (!Number.isFinite(value)) return "";
+  const total = Math.max(0, Math.floor(value));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }

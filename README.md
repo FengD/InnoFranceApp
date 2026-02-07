@@ -120,6 +120,24 @@ pip install -r InnoFranceVoiceGenerateAgent/requirements.txt
 
 ## Quick Start
 
+### Docker (CUDA 12.8, backend + frontend)
+
+From `InnoFranceApp/docker`:
+
+```bash
+./start.sh
+```
+
+Open:
+
+- Backend: http://localhost:8000
+- Frontend: http://localhost:8003
+
+Notes:
+
+- GPU support requires NVIDIA Container Toolkit.
+- The script will copy `env.example` to `.env` on first run; edit it for model paths and API keys.
+
 ### CLI (single pipeline)
 
 Example:

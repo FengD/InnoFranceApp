@@ -111,11 +111,6 @@ export async function regenerateJobAudio(
   });
 }
 
-export async function redetectSpeakers(jobId: string): Promise<PipelineJob> {
-  return request(`/api/pipeline/jobs/${jobId}/speakers-redetect`, {
-    method: "POST",
-  });
-}
 
 export async function getJobSummary(jobId: string): Promise<string> {
   const res = await fetch(`${API_BASE}/api/pipeline/jobs/${jobId}/summary`);

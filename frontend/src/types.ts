@@ -15,6 +15,7 @@ export interface PipelineResult {
   transcript_path?: string;
   input_audio_path?: string;
   speaker_audio_paths?: string[];
+  speaker_audio_tags?: string[];
   summary_name: string;
   audio_name: string;
   translated_relative?: string;

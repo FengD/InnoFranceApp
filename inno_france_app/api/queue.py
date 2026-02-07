@@ -367,6 +367,14 @@ class PipelineQueue:
                 speaker_future=job._speaker_future,
             )
             job.status = "completed"
+            source_url = req.youtube_url or req.audio_url
+            if source_url:
+                if job.note:
+                    if source_url not in job.note:
+                        separator = "\n" if not job.note.endswith("\n") else ""
+                        job.note = f"{job.note}{separator}{source_url}"
+                else:
+                    job.note = source_url
             runs_dir = config.runs_dir.resolve()
             audio_url = None
             summary_url = None
@@ -427,6 +435,9 @@ class PipelineQueue:
                 "input_audio_path": str(result.input_audio_path),
                 "speaker_audio_paths": [str(p) for p in result.speaker_audio_paths],
                 "speaker_clip_segments": getattr(result, "speaker_clip_segments", {}),
+                "speaker_clip_candidates": getattr(result, "speaker_clip_candidates", {}),
+                "speaker_clip_selected": getattr(result, "speaker_clip_selected", {}),
+                "speaker_audio_tags": getattr(result, "speaker_audio_tags", []),
                 "summary_name": result.summary_path.name,
                 "audio_name": result.audio_path.name,
                 "translated_relative": str(result.translated_text_path.resolve().relative_to(runs_dir))

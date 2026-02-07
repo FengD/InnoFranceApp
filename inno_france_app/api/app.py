@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -17,7 +18,16 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..config import load_app_config
 from ..mcp_clients import MCPToolClient
-from ..pipeline import _parse_speaker_configs, _detect_speaker_configs, _group_segments_by_speaker
+from ..pipeline import (
+    _parse_speaker_configs,
+    _detect_speaker_configs,
+    _group_segments_by_speaker,
+    _select_speaker_clips,
+    _extract_speaker_tags,
+    _build_speaker_clip_candidates,
+    _speaker_sort_key,
+    _extract_audio_clip,
+)
 from ..speaker_profiles import build_speaker_configs
 from ..text_utils import normalize_translation_text, parse_speaker_lines
 from ..s3 import S3Client
@@ -471,54 +481,62 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         job = _get_job_or_404(job_id)
         if not job.result:
             raise HTTPException(status_code=400, detail="Job results not available")
-        audio_path_value = job.result.get("audio_path")
         transcript_path_value = job.result.get("transcript_path")
         translated_path_value = job.result.get("translated_path")
         run_dir_value = job.result.get("run_dir")
-        if not all([audio_path_value, transcript_path_value, translated_path_value, run_dir_value]):
-            raise HTTPException(status_code=400, detail="Audio/transcript/translation not available")
-        audio_path = Path(audio_path_value)
+        if not all([transcript_path_value, translated_path_value, run_dir_value]):
+            raise HTTPException(status_code=400, detail="Transcript/translation not available")
+        clip_paths = job.result.get("speaker_audio_paths") or []
+        if not clip_paths:
+            raise HTTPException(status_code=400, detail="Speaker clips not available")
         transcript_path = Path(transcript_path_value)
         translated_path = Path(translated_path_value)
         run_dir = Path(run_dir_value)
-        if not audio_path.exists() or not transcript_path.exists() or not translated_path.exists():
+        if not transcript_path.exists() or not translated_path.exists():
             raise HTTPException(status_code=404, detail="Required files not found")
 
-        transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
         translated_text = translated_path.read_text(encoding="utf-8").strip()
 
         def emit(step: str, status: str, message: str, detail: Optional[str] = None) -> None:
             job.steps.append(StepEvent(step=step, status=status, message=message, detail=detail))
             queue.save_state()
 
-        emit("speakers", "running", "Re-detecting speaker profiles", None)
+        emit("speakers", "running", "Re-detecting speakers from clips", None)
         speaker_client = MCPToolClient(config.services["speaker_detect"])
-        speaker_groups = _group_segments_by_speaker(transcript)
-        previous_segments: dict[str, list[dict[str, float]]] = {}
-        if job.result:
-            raw_segments = job.result.get("speaker_clip_segments", {}) or {}
-            if isinstance(raw_segments, dict):
-                for key, value in raw_segments.items():
-                    if isinstance(value, dict):
-                        previous_segments[str(key)] = [value]
-                    elif isinstance(value, list):
-                        previous_segments[str(key)] = [
-                            item for item in value if isinstance(item, dict)
-                        ]
-        speakers, speaker_audio_paths, speaker_clip_segments = await _detect_speaker_configs(
-            translated_text=translated_text,
-            audio_path=audio_path,
-            run_dir=run_dir,
-            speaker_groups=speaker_groups,
-            speaker_client=speaker_client,
-            runs_dir=config.runs_dir,
-            emit=emit,
-            exclude_segments=previous_segments,
-        )
-        if not speakers:
-            emit("speakers", "running", "Fallback to default speaker configs", None)
-            speakers = build_speaker_configs(translated_text)
-            speaker_clip_segments = {}
+
+        clip_tags = job.result.get("speaker_audio_tags") or []
+        speaker_tags = clip_tags or _extract_speaker_tags(translated_text)
+        if not speaker_tags:
+            speaker_tags = ["SPEAKER0"]
+        clips_with_tags: list[tuple[str, Path]] = []
+        for index, path_value in enumerate(clip_paths):
+            if not isinstance(path_value, str):
+                continue
+            tag = speaker_tags[index] if index < len(speaker_tags) else f"SPEAKER{index}"
+            clips_with_tags.append((tag, Path(path_value)))
+        speakers: list[dict[str, Any]] = []
+        for tag, clip_path in clips_with_tags:
+            result = await speaker_client.call_tool(
+                "detect_speaker", {"audio_path": str(clip_path)}
+            )
+            profile = None
+            if result.get("success"):
+                profiles = result.get("result", [])
+                if isinstance(profiles, list) and profiles:
+                    profile = profiles[0]
+            else:
+                error = result.get("error", "Unknown error")
+                emit("speakers", "running", f"Speaker detect failed for {tag}", error)
+            speakers.append(
+                {
+                    "speaker_tag": f"[{tag}]",
+                    "design_text": (profile or {}).get("design_text") or f"说话人 {tag}",
+                    "design_instruct": (profile or {}).get("design_instruct")
+                    or "性别与年龄未知，语速适中，音色自然清晰。",
+                    "language": "Chinese",
+                }
+            )
+
         speakers_path = run_dir / "speakers.json"
         speakers_path.write_text(
             json.dumps(speakers, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -539,9 +557,109 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             )
             if speakers_uploaded:
                 speakers_url = speakers_uploaded.url
-            for path in speaker_audio_paths:
+            for path_value in clip_paths:
+                if isinstance(path_value, str):
+                    uploaded = s3_client.upload_file(
+                        path_value, f"{run_prefix}/{Path(path_value).name}"
+                    )
+                    if uploaded and uploaded.url:
+                        speaker_audio_urls.append(uploaded.url)
+
+        job = queue.update_job_result(
+            job_id,
+            {
+                "speakers_path": str(speakers_path),
+                "speakers_relative": _relative_to_output(speakers_path),
+                "speaker_audio_paths": [str(p) for p in clip_paths if isinstance(p, str)],
+                "speaker_audio_relatives": [
+                    _relative_to_output(Path(p))
+                    for p in clip_paths
+                    if isinstance(p, str)
+                ],
+                "speaker_audio_tags": speaker_tags,
+                "speakers_url": speakers_url,
+                "speaker_audio_urls": speaker_audio_urls,
+            },
+        )
+        return PipelineJobResponse(
+            **job.to_response(queue_position=queue.queue_position(job.job_id))
+        )
+
+    @app.post("/api/pipeline/jobs/{job_id}/speakers-reclip", response_model=PipelineJobResponse)
+    async def reclip_speakers(job_id: str) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id)
+        if not job.result:
+            raise HTTPException(status_code=400, detail="Job results not available")
+        audio_path_value = job.result.get("audio_path")
+        transcript_path_value = job.result.get("transcript_path")
+        translated_path_value = job.result.get("translated_path")
+        run_dir_value = job.result.get("run_dir")
+        if not all([audio_path_value, transcript_path_value, translated_path_value, run_dir_value]):
+            raise HTTPException(status_code=400, detail="Audio/transcript/translation not available")
+        audio_path = Path(audio_path_value)
+        transcript_path = Path(transcript_path_value)
+        translated_path = Path(translated_path_value)
+        run_dir = Path(run_dir_value)
+        if not audio_path.exists() or not transcript_path.exists() or not translated_path.exists():
+            raise HTTPException(status_code=404, detail="Required files not found")
+
+        transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+        translated_text = translated_path.read_text(encoding="utf-8").strip()
+
+        def emit(step: str, status: str, message: str, detail: Optional[str] = None) -> None:
+            job.steps.append(StepEvent(step=step, status=status, message=message, detail=detail))
+            queue.save_state()
+
+        emit("speakers", "running", "Re-selecting speaker clips", None)
+        speaker_groups = _group_segments_by_speaker(transcript)
+        candidates = job.result.get("speaker_clip_candidates") if job.result else None
+        if not isinstance(candidates, dict) or not candidates:
+            candidates = _build_speaker_clip_candidates(speaker_groups)
+        selected = job.result.get("speaker_clip_selected") if job.result else None
+        if not isinstance(selected, dict):
+            selected = {}
+        tags = job.result.get("speaker_audio_tags") if job.result else None
+        if not isinstance(tags, list) or not tags:
+            tags = sorted(candidates.keys(), key=_speaker_sort_key)
+
+        clips_with_tags: list[tuple[str, Path]] = []
+        chosen: dict[str, dict[str, Any]] = {}
+        for tag in tags:
+            options = candidates.get(tag) or []
+            if not options:
+                continue
+            current_index = int(selected.get(tag, 0))
+            next_index = (current_index + 1) % len(options)
+            selected[tag] = next_index
+            seg = options[next_index]
+            chosen[tag] = seg
+            output_path = run_dir / f"{tag.lower()}.wav"
+            await asyncio.to_thread(
+                _extract_audio_clip,
+                audio_path,
+                seg["start"],
+                seg["end"],
+                output_path,
+            )
+            clips_with_tags.append((tag, output_path))
+            emit(
+                "speakers",
+                "running",
+                f"Speaker clip saved for {tag}",
+                _relative_to_output(output_path),
+            )
+
+        if not clips_with_tags:
+            raise HTTPException(status_code=400, detail="No valid speaker clips found")
+
+        speaker_tags = [tag for tag, _ in clips_with_tags]
+        clip_paths = [str(path) for _, path in clips_with_tags]
+        speaker_audio_urls: list[str] = []
+        if s3_client.enabled:
+            run_prefix = run_dir.name
+            for path_value in clip_paths:
                 uploaded = s3_client.upload_file(
-                    str(path), f"{run_prefix}/{path.name}"
+                    path_value, f"{run_prefix}/{Path(path_value).name}"
                 )
                 if uploaded and uploaded.url:
                     speaker_audio_urls.append(uploaded.url)
@@ -549,15 +667,225 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         job = queue.update_job_result(
             job_id,
             {
+                "speaker_audio_paths": clip_paths,
+                "speaker_audio_relatives": [
+                    _relative_to_output(Path(p)) for p in clip_paths
+                ],
+                "speaker_audio_urls": speaker_audio_urls,
+                "speaker_audio_tags": speaker_tags,
+                "speaker_clip_segments": chosen,
+                "speaker_clip_candidates": candidates,
+                "speaker_clip_selected": selected,
+            },
+        )
+        emit("speakers", "completed", "Speaker clips updated", None)
+        return PipelineJobResponse(
+            **job.to_response(queue_position=queue.queue_position(job.job_id))
+        )
+
+
+    @app.post("/api/pipeline/jobs/{job_id}/speakers-reclip/{speaker_tag}", response_model=PipelineJobResponse)
+    async def reclip_speaker(job_id: str, speaker_tag: str) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id)
+        if not job.result:
+            raise HTTPException(status_code=400, detail="Job results not available")
+        audio_path_value = job.result.get("input_audio_path") or job.result.get("audio_path")
+        transcript_path_value = job.result.get("transcript_path")
+        run_dir_value = job.result.get("run_dir")
+        if not all([audio_path_value, transcript_path_value, run_dir_value]):
+            raise HTTPException(status_code=400, detail="Audio/transcript not available")
+        audio_path = Path(audio_path_value)
+        transcript_path = Path(transcript_path_value)
+        run_dir = Path(run_dir_value)
+        if not audio_path.exists() or not transcript_path.exists():
+            raise HTTPException(status_code=404, detail="Required files not found")
+
+        transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+
+        def emit(step: str, status: str, message: str, detail: Optional[str] = None) -> None:
+            job.steps.append(StepEvent(step=step, status=status, message=message, detail=detail))
+            queue.save_state()
+
+        emit("speakers", "running", f"Re-selecting clip for {speaker_tag}", None)
+        speaker_groups = _group_segments_by_speaker(transcript)
+        candidates = job.result.get("speaker_clip_candidates") if job.result else None
+        if not isinstance(candidates, dict) or not candidates:
+            candidates = _build_speaker_clip_candidates(speaker_groups)
+        selected = job.result.get("speaker_clip_selected") if job.result else None
+        if not isinstance(selected, dict):
+            selected = {}
+
+        options = candidates.get(speaker_tag) or []
+        if not options:
+            raise HTTPException(status_code=400, detail="No candidate clips for speaker")
+        current_index = int(selected.get(speaker_tag, 0))
+        next_index = (current_index + 1) % len(options)
+        selected[speaker_tag] = next_index
+        seg = options[next_index]
+        output_path = run_dir / f"{speaker_tag.lower()}.wav"
+        await asyncio.to_thread(
+            _extract_audio_clip,
+            audio_path,
+            seg["start"],
+            seg["end"],
+            output_path,
+        )
+        emit(
+            "speakers",
+            "running",
+            f"Speaker clip saved for {speaker_tag}",
+            _relative_to_output(output_path),
+        )
+
+        clip_paths = job.result.get("speaker_audio_paths") or []
+        clip_tags = job.result.get("speaker_audio_tags") or sorted(candidates.keys(), key=_speaker_sort_key)
+        if len(clip_paths) < len(clip_tags):
+            clip_paths = list(clip_paths) + [""] * (len(clip_tags) - len(clip_paths))
+        for index, tag in enumerate(clip_tags):
+            if tag == speaker_tag:
+                clip_paths[index] = str(output_path)
+        chosen = job.result.get("speaker_clip_segments") or {}
+        if isinstance(chosen, dict):
+            chosen[speaker_tag] = seg
+
+        speaker_audio_urls: list[str] = []
+        if s3_client.enabled:
+            run_prefix = run_dir.name
+            for path_value in clip_paths:
+                if not path_value:
+                    continue
+                uploaded = s3_client.upload_file(
+                    path_value, f"{run_prefix}/{Path(path_value).name}"
+                )
+                if uploaded and uploaded.url:
+                    speaker_audio_urls.append(uploaded.url)
+
+        job = queue.update_job_result(
+            job_id,
+            {
+                "speaker_audio_paths": clip_paths,
+                "speaker_audio_relatives": [
+                    _relative_to_output(Path(p)) for p in clip_paths if p
+                ],
+                "speaker_audio_urls": speaker_audio_urls,
+                "speaker_audio_tags": clip_tags,
+                "speaker_clip_segments": chosen,
+                "speaker_clip_candidates": candidates,
+                "speaker_clip_selected": selected,
+            },
+        )
+        emit("speakers", "completed", "Speaker clip updated", None)
+        return PipelineJobResponse(
+            **job.to_response(queue_position=queue.queue_position(job.job_id))
+        )
+
+
+    @app.post("/api/pipeline/jobs/{job_id}/speakers-redetect/{speaker_tag}", response_model=PipelineJobResponse)
+    async def redetect_speaker(job_id: str, speaker_tag: str) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id)
+        if not job.result:
+            raise HTTPException(status_code=400, detail="Job results not available")
+        translated_path_value = job.result.get("translated_path")
+        run_dir_value = job.result.get("run_dir")
+        if not all([translated_path_value, run_dir_value]):
+            raise HTTPException(status_code=400, detail="Translation not available")
+        clip_paths = job.result.get("speaker_audio_paths") or []
+        clip_tags = job.result.get("speaker_audio_tags") or []
+        if not clip_paths:
+            raise HTTPException(status_code=400, detail="Speaker clips not available")
+        translated_path = Path(translated_path_value)
+        run_dir = Path(run_dir_value)
+        if not translated_path.exists():
+            raise HTTPException(status_code=404, detail="Required files not found")
+
+        translated_text = translated_path.read_text(encoding="utf-8").strip()
+        if not clip_tags:
+            clip_tags = _extract_speaker_tags(translated_text) or ["SPEAKER0"]
+
+        clip_path = None
+        for index, path_value in enumerate(clip_paths):
+            tag = clip_tags[index] if index < len(clip_tags) else f"SPEAKER{index}"
+            if tag == speaker_tag:
+                clip_path = Path(path_value)
+                break
+        if clip_path is None:
+            raise HTTPException(status_code=400, detail="Speaker clip not found")
+
+        def emit(step: str, status: str, message: str, detail: Optional[str] = None) -> None:
+            job.steps.append(StepEvent(step=step, status=status, message=message, detail=detail))
+            queue.save_state()
+
+        emit("speakers", "running", f"Re-detecting {speaker_tag}", None)
+        speaker_client = MCPToolClient(config.services["speaker_detect"])
+        result = await speaker_client.call_tool(
+            "detect_speaker", {"audio_path": str(clip_path)}
+        )
+        profile = None
+        if result.get("success"):
+            profiles = result.get("result", [])
+            if isinstance(profiles, list) and profiles:
+                profile = profiles[0]
+        else:
+            error = result.get("error", "Unknown error")
+            emit("speakers", "running", f"Speaker detect failed for {speaker_tag}", error)
+
+        speakers_path = run_dir / "speakers.json"
+        existing = []
+        if speakers_path.exists():
+            try:
+                existing = json.loads(speakers_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                existing = []
+        if not isinstance(existing, list):
+            existing = []
+        target_tag = f"[{speaker_tag}]"
+        updated = []
+        replaced = False
+        for item in existing:
+            if isinstance(item, dict) and item.get("speaker_tag") == target_tag:
+                updated.append(
+                    {
+                        "speaker_tag": target_tag,
+                        "design_text": (profile or {}).get("design_text") or f"说话人 {speaker_tag}",
+                        "design_instruct": (profile or {}).get("design_instruct")
+                        or "性别与年龄未知，语速适中，音色自然清晰。",
+                        "language": "Chinese",
+                    }
+                )
+                replaced = True
+            else:
+                updated.append(item)
+        if not replaced:
+            updated.append(
+                {
+                    "speaker_tag": target_tag,
+                    "design_text": (profile or {}).get("design_text") or f"说话人 {speaker_tag}",
+                    "design_instruct": (profile or {}).get("design_instruct")
+                    or "性别与年龄未知，语速适中，音色自然清晰。",
+                    "language": "Chinese",
+                }
+            )
+        speakers_path.write_text(
+            json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        emit("speakers", "completed", "Speaker configs updated", _relative_to_output(speakers_path))
+
+        speakers_url = job.result.get("speakers_url") if job.result else None
+        if s3_client.enabled:
+            run_prefix = run_dir.name
+            speakers_uploaded = s3_client.upload_file(
+                str(speakers_path), f"{run_prefix}/{speakers_path.name}"
+            )
+            if speakers_uploaded:
+                speakers_url = speakers_uploaded.url
+
+        job = queue.update_job_result(
+            job_id,
+            {
                 "speakers_path": str(speakers_path),
                 "speakers_relative": _relative_to_output(speakers_path),
-                "speaker_audio_paths": [str(p) for p in speaker_audio_paths],
-                "speaker_audio_relatives": [
-                    _relative_to_output(p) for p in speaker_audio_paths
-                ],
-                "speaker_clip_segments": speaker_clip_segments,
+                "speaker_audio_tags": clip_tags,
                 "speakers_url": speakers_url,
-                "speaker_audio_urls": speaker_audio_urls,
             },
         )
         return PipelineJobResponse(
