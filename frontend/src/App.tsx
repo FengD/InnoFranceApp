@@ -2,20 +2,28 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   deleteJob,
   getJob,
+  getMe,
   getSettings,
   listJobs,
+  login,
+  logout,
   reorderQueue,
   startPipeline,
+  startWeChatLogin,
   streamJobEvents,
   updateJobMetadata,
   updateSettings,
 } from "./api";
-import type { PipelineJob, SettingsResponse } from "./types";
+import type { PipelineJob, SettingsResponse, User } from "./types";
 import { JobCard } from "./components/JobCard";
+import { LoginPanel } from "./components/LoginPanel";
 import { PipelineForm } from "./components/PipelineForm";
 import { SettingsPanel } from "./components/SettingsPanel";
 
 function App() {
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [jobs, setJobs] = useState<PipelineJob[]>([]);
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -46,6 +54,31 @@ function App() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      setAuthLoading(true);
+      setAuthError(null);
+      try {
+        const me = await getMe();
+        if (!cancelled) setCurrentUser(me);
+      } catch {
+        if (!cancelled) setCurrentUser(null);
+      } finally {
+        if (!cancelled) setAuthLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setJobs([]);
+      setSettings(null);
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
       setLoading(true);
       setError(null);
       try {
@@ -59,7 +92,12 @@ function App() {
         }
       } catch (e) {
         if (!cancelled) {
-          setError(e instanceof Error ? e.message : "Failed to load");
+          if (e instanceof Error && e.message.toLowerCase().includes("unauthorized")) {
+            setCurrentUser(null);
+            setAuthError("Please sign in to continue.");
+          } else {
+            setError(e instanceof Error ? e.message : "Failed to load");
+          }
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -68,7 +106,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [currentUser]);
 
   useEffect(() => {
     const stored = window.localStorage.getItem("innofrance-theme");
@@ -294,6 +332,40 @@ function App() {
     [draggingId, handleReorderQueue, queuedJobs]
   );
 
+  if (authLoading) {
+    return (
+      <div style={{ padding: "2rem", textAlign: "center" }}>
+        Checking session…
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <LoginPanel
+        error={authError}
+        onLogin={async (username, password) => {
+          setAuthError(null);
+          try {
+            const user = await login(username, password);
+            setCurrentUser(user);
+          } catch (e) {
+            setAuthError(e instanceof Error ? e.message : "Failed to sign in");
+          }
+        }}
+        onWeChatLogin={async () => {
+          setAuthError(null);
+          try {
+            const res = await startWeChatLogin(window.location.origin);
+            window.location.assign(res.url);
+          } catch (e) {
+            setAuthError(e instanceof Error ? e.message : "WeChat login failed");
+          }
+        }}
+      />
+    );
+  }
+
   if (loading) {
     return (
       <div style={{ padding: "2rem", textAlign: "center" }}>
@@ -307,6 +379,17 @@ function App() {
       <header className="header">
         <h1>InnoFrance Pipeline</h1>
         <div className="header-actions">
+          <span className="muted">Signed in as {currentUser.username}</span>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={async () => {
+              await logout();
+              setCurrentUser(null);
+            }}
+          >
+            Sign out
+          </button>
           <button
             type="button"
             className="btn btn-ghost btn-sm"

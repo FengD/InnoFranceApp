@@ -20,6 +20,7 @@ The app orchestrates multiple MCP services:
 - **Web UI**: Start and monitor up to three pipelines from a browser. Pipelines are queued; one runs at a time by default, with an option to run up to three in parallel.
 - **Progress**: Per-pipeline step progress and optional detailed logs (audio source → transcription → translation → summary → speakers → TTS).
 - **Artifacts**: Download and preview summary text and generated audio for completed runs.
+- **Auth**: Username/password login with optional WeChat SSO; pipelines are isolated per user.
 
 ## Docs
 
@@ -50,6 +51,7 @@ InnoFranceApp/
 │   ├── config.py            # Config loading
 │   ├── settings.py          # Environment-based settings
 │   ├── pipeline.py          # Pipeline logic and progress hooks
+│   ├── db.py                # Sqlite persistence and migration
 │   ├── mcp_clients.py       # MCP client (stdio/SSE)
 │   ├── speaker_profiles.py  # Speaker config generation
 │   ├── text_utils.py        # Text normalization
@@ -71,7 +73,8 @@ InnoFranceApp/
         └── components/
             ├── PipelineForm.tsx
             ├── JobCard.tsx
-            └── SettingsPanel.tsx
+            ├── SettingsPanel.tsx
+            └── LoginPanel.tsx
 ```
 
 ## Workflow (Pipeline Steps)
@@ -195,19 +198,26 @@ npm run dev
 
 3. Open http://localhost:5173. The frontend proxies `/api` to the backend (see `frontend/vite.config.ts`).
 
+- **Login**: Default user is `admin` / `admin`. You can also sign in with WeChat SSO if configured.
 - **New pipeline**: Choose source (YouTube URL, audio URL, or local upload), set provider/language/speed, then **Start pipeline**. Up to three pipelines can be queued or running; extra submissions are rejected until a slot is free.
 - **Manual speakers**: If enabled, the pipeline pauses after translation and waits for your speaker JSON. Translation text can be previewed/edited before submitting speakers.
 - **Settings**: Toggle **Allow parallel execution** and set **Max concurrent pipelines** (1–3). When parallel is off, only one pipeline runs at a time; others wait.
 - **Progress**: Each job shows status (Queued / Running / Completed / Failed), a step progress bar, and a **Show details** toggle for step-by-step logs.
 - **Completed jobs**: Use **Download** for summary `.txt` and audio `.wav`, and **Preview** to view text or play audio in the browser.
 - **Theme**: Use the header toggle to switch between dark and light mode.
+- **Isolation**: Each user only sees their own pipelines and artifacts.
 
 ## API Overview
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/settings` | Get parallel flag and max concurrent |
-| PATCH | `/api/settings` | Update `parallel_enabled`, `max_concurrent` (JSON body) |
+| GET | `/api/settings` | Get per-user settings |
+| POST | `/api/settings` | Update `parallel_enabled`, `max_concurrent`, `tags`, `api_keys`, `asset_selections` |
+| GET | `/api/me` | Get current user |
+| POST | `/api/auth/login` | Username/password login |
+| POST | `/api/auth/logout` | End session |
+| GET | `/api/auth/wechat/start` | Start WeChat SSO (returns redirect URL) |
+| GET | `/api/auth/wechat/callback` | WeChat SSO callback |
 | POST | `/api/pipeline/start` | Start a pipeline (JSON body: `youtube_url` or `audio_url` or `audio_path`, plus `provider`, `language`, etc.) |
 | POST | `/api/uploads/audio` | Upload local audio and return `audio_path` |
 | GET | `/api/pipeline/jobs` | List all jobs |
@@ -252,6 +262,7 @@ All of these can be set in `.env` (or in the shell). The app reads them on start
 
 - `INNOFRANCE_PROJECT_ROOT` — Override repo root (optional)
 - `INNOFRANCE_RUNS_DIR` — Run artifacts directory (default: `<root>/InnoFranceApp/runs`)
+- `INNOFRANCE_DB_PATH` — Sqlite database path (default: `<runs>/app.db`)
 - `INNOFRANCE_PYTHON_CMD` — Python command for MCP services (default: `python3`)
 - `INNOFRANCE_YT_EXTRACTOR_DIR`, `INNOFRANCE_ASR_DIR`, `INNOFRANCE_TRANSLATE_DIR`, `INNOFRANCE_TTS_DIR` — Paths to each MCP service repo
 
@@ -269,6 +280,13 @@ All of these can be set in `.env` (or in the shell). The app reads them on start
 **YouTube (optional)**
 
 - `YT_COOKIES_FILE`, `YT_USER_AGENT`, `YT_PROXY` — Can also be set in `config.json` per service
+
+**Web / Auth**
+
+- `INNOFRANCE_CORS_ORIGINS` — Comma-separated CORS origins (frontend URL)
+- `INNOFRANCE_WEB_BASE_URL` — Frontend base URL for post-login redirect
+- `WECHAT_APP_ID`, `WECHAT_APP_SECRET` — WeChat OAuth app credentials
+- `WECHAT_REDIRECT_URI` — OAuth callback URL (e.g. `https://your-domain/api/auth/wechat/callback`)
 
 ### Config file
 

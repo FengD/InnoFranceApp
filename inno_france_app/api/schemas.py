@@ -22,6 +22,16 @@ class PipelineStartRequest(BaseModel):
     manual_speakers: bool = False
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class UserResponse(BaseModel):
+    user_id: int
+    username: str
+
+
 class StepEvent(BaseModel):
     step: str
     status: str

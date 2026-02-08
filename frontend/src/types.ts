@@ -90,3 +90,8 @@ export interface PipelineStartRequest {
   yt_proxy?: string | null;
   manual_speakers?: boolean;
 }
+
+export interface User {
+  user_id: number;
+  username: string;
+}

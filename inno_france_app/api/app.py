@@ -1,22 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
+import urllib.parse
+import urllib.request
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Request, Response, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from sse_starlette.sse import EventSourceResponse
 
 from ..config import load_app_config
+from ..db import AppDatabase, UserRecord
 from ..mcp_clients import MCPToolClient
 from ..pipeline import (
     _parse_speaker_configs,
@@ -33,6 +39,7 @@ from ..text_utils import normalize_translation_text, parse_speaker_lines
 from ..s3 import S3Client
 from .queue import PipelineQueue
 from .schemas import (
+    LoginRequest,
     PipelineJobResponse,
     PipelineListResponse,
     PipelineStartRequest,
@@ -44,6 +51,7 @@ from .schemas import (
     StepEvent,
     SummaryUpdateRequest,
     TranslationUpdateRequest,
+    UserResponse,
 )
 
 
@@ -53,23 +61,63 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         description="API for running and monitoring YouTube-to-Chinese summary/audio pipelines.",
         version="1.0.0",
     )
+    config = load_app_config(config_path)
+    cors_origins = config.settings.cors_origins or [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
-    config = load_app_config(config_path)
     s3_client = S3Client(config.settings)
+    db = AppDatabase(config.settings.db_path)
+
+    def _hash_password(password: str, salt: Optional[str] = None) -> tuple[str, str]:
+        salt_value = salt or secrets.token_hex(16)
+        digest = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), salt_value.encode("utf-8"), 200_000
+        )
+        return digest.hex(), salt_value
+
+    def _verify_password(password: str, hashed: str, salt: str) -> bool:
+        digest, _ = _hash_password(password, salt=salt)
+        return hmac.compare_digest(digest, hashed)
+
+    admin_hash, admin_salt = _hash_password("admin")
+    admin_id = db.ensure_default_admin("admin", admin_hash, admin_salt)
+    state_path = config.runs_dir / "pipeline_state.json"
+    if not db.has_any_jobs() and state_path.exists():
+        db.migrate_from_pipeline_state(state_path, admin_id)
+
     queue = PipelineQueue(
+        db=db,
         parallel_enabled=False,
         max_concurrent=1,
-        state_path=config.runs_dir / "pipeline_state.json",
         s3_client=s3_client,
         runs_dir=config.runs_dir,
     )
+
+    def _get_current_user(request: Request) -> Optional[UserRecord]:
+        session_id = request.cookies.get("session_id")
+        if not session_id:
+            return None
+        session = db.get_session(session_id)
+        if not session:
+            return None
+        return db.get_user_by_id(session.user_id)
+
+    def _require_user(request: Request) -> UserRecord:
+        user = _get_current_user(request)
+        if not user or not user.is_active:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        return user
 
     def _allowed_path(relative_path: str) -> Path:
         if not relative_path or ".." in relative_path or relative_path.startswith("/"):
@@ -86,9 +134,26 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
                 continue
         raise HTTPException(status_code=404, detail="File not found")
 
-    def _get_job_or_404(job_id: str):
+    def _allowed_user_path(user: UserRecord, relative_path: str) -> Path:
+        full = _allowed_path(relative_path)
+        jobs = queue.list_jobs(user.user_id, include_steps=False)
+        run_dirs: list[Path] = []
+        for job in jobs:
+            result = job.get("result") or {}
+            run_dir_value = result.get("run_dir")
+            if isinstance(run_dir_value, str) and run_dir_value:
+                run_dirs.append(Path(run_dir_value))
+        for run_dir in run_dirs:
+            try:
+                if full.resolve().is_relative_to(run_dir.resolve()):
+                    return full
+            except ValueError:
+                continue
+        raise HTTPException(status_code=404, detail="File not found")
+
+    def _get_job_or_404(job_id: str, user: UserRecord):
         job = queue.get_job(job_id)
-        if not job:
+        if not job or job.user_id != user.user_id:
             raise HTTPException(status_code=404, detail="Job not found")
         return job
 
@@ -110,11 +175,11 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
     def _default_asset_filename(asset_type: str) -> str:
         return "start_music.wav" if asset_type == "start_music" else "beginning.wav"
 
-    def _asset_selection_for_type(asset_type: str) -> Optional[str]:
-        return queue.asset_selections.get(asset_type)
+    def _asset_selection_for_type(user_id: int, asset_type: str) -> Optional[str]:
+        return queue.get_settings(user_id).asset_selections.get(asset_type)
 
-    def _resolve_asset_for_type(asset_type: str) -> Path:
-        selection = _asset_selection_for_type(asset_type)
+    def _resolve_asset_for_type(user_id: int, asset_type: str) -> Path:
+        selection = _asset_selection_for_type(user_id, asset_type)
         if selection and selection.startswith("custom:"):
             filename = selection.split(":", 1)[1]
             candidate = _asset_custom_dir(asset_type) / filename
@@ -130,19 +195,24 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             return fallback
         raise HTTPException(status_code=404, detail=f"Asset not found: {default_name}")
 
+    def _default_asset_available(asset_type: str) -> bool:
+        default_name = _default_asset_filename(asset_type)
+        assets_dir = _assets_root()
+        if (assets_dir / default_name).exists():
+            return True
+        fallback = config.settings.project_root / "InnoFrance" / default_name
+        return fallback.exists()
+
     def _list_asset_options(asset_type: str) -> list[dict[str, str]]:
         options: list[dict[str, str]] = []
         default_name = _default_asset_filename(asset_type)
-        try:
-            _resolve_asset_for_type(asset_type)
+        if _default_asset_available(asset_type):
             options.append(
                 {
                     "id": "default",
                     "label": f"Default ({default_name})",
                 }
             )
-        except HTTPException:
-            pass
         custom_dir = _asset_custom_dir(asset_type)
         if custom_dir.exists():
             for path in sorted(custom_dir.glob("*.wav")):
@@ -165,18 +235,18 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         }
         return mapping.get(provider)
 
-    def _provider_key_source(provider: str) -> str:
+    def _provider_key_source(user_id: int, provider: str) -> str:
         if provider in {"ollama", "vllm", "sglang"}:
             return "local"
-        if queue.get_api_key(provider):
+        if queue.get_api_key(user_id, provider):
             return "setting"
         env_name = _provider_key_env(provider)
         if env_name and os.getenv(env_name):
             return "env"
         return "none"
 
-    def _provider_available(provider: str) -> bool:
-        return _provider_key_source(provider) != "none"
+    def _provider_available(user_id: int, provider: str) -> bool:
+        return _provider_key_source(user_id, provider) != "none"
 
     def _sanitize_export_name(value: str) -> str:
         cleaned = value.strip().lower()
@@ -333,48 +403,172 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             shutil.copyfileobj(file.file, out)
         return target
 
+    def _wechat_get_json(url: str) -> dict[str, Any]:
+        try:
+            with urllib.request.urlopen(url) as response:
+                payload = response.read().decode("utf-8")
+                return json.loads(payload)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"WeChat request failed: {exc}") from exc
+
+    @app.post("/api/auth/login", response_model=UserResponse)
+    def login(body: LoginRequest, response: Response):
+        user = db.get_user_by_username(body.username.strip())
+        if not user or not user.is_active:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        if not _verify_password(body.password, user.password_hash, user.password_salt):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        session = db.create_session(user.user_id)
+        response.set_cookie(
+            "session_id",
+            session.session_id,
+            httponly=True,
+            samesite="lax",
+        )
+        return UserResponse(user_id=user.user_id, username=user.username)
+
+    @app.post("/api/auth/logout")
+    def logout(request: Request, response: Response):
+        session_id = request.cookies.get("session_id")
+        if session_id:
+            db.delete_session(session_id)
+        response.delete_cookie("session_id")
+        return {"success": True}
+
+    @app.get("/api/me", response_model=UserResponse)
+    def me(user: UserRecord = Depends(_require_user)):
+        return UserResponse(user_id=user.user_id, username=user.username)
+
+    @app.get("/api/auth/wechat/start")
+    def wechat_start(
+        request: Request,
+        redirect: Optional[str] = Query(None),
+    ):
+        if not config.settings.wechat_app_id or not config.settings.wechat_app_secret:
+            raise HTTPException(status_code=400, detail="WeChat login not configured")
+        state = uuid.uuid4().hex
+        redirect_url = redirect or config.settings.web_base_url or None
+        db.upsert_wechat_state(state, redirect_url)
+        callback = config.settings.wechat_redirect_uri or str(request.url_for("wechat_callback"))
+        params = {
+            "appid": config.settings.wechat_app_id,
+            "redirect_uri": callback,
+            "response_type": "code",
+            "scope": "snsapi_login",
+            "state": state,
+        }
+        url = (
+            "https://open.weixin.qq.com/connect/qrconnect?"
+            + urllib.parse.urlencode(params)
+            + "#wechat_redirect"
+        )
+        return {"url": url}
+
+    @app.get("/api/auth/wechat/callback", name="wechat_callback")
+    def wechat_callback(code: str, state: str, request: Request):
+        if not code or not state:
+            raise HTTPException(status_code=400, detail="Missing code/state")
+        redirect_url = db.consume_wechat_state(state) or config.settings.web_base_url or "/"
+        token_url = (
+            "https://api.weixin.qq.com/sns/oauth2/access_token?"
+            + urllib.parse.urlencode(
+                {
+                    "appid": config.settings.wechat_app_id,
+                    "secret": config.settings.wechat_app_secret,
+                    "code": code,
+                    "grant_type": "authorization_code",
+                }
+            )
+        )
+        token_payload = _wechat_get_json(token_url)
+        if token_payload.get("errcode"):
+            raise HTTPException(status_code=400, detail=f"WeChat error: {token_payload}")
+        access_token = token_payload.get("access_token")
+        openid = token_payload.get("openid")
+        unionid = token_payload.get("unionid")
+        if not access_token or not openid:
+            raise HTTPException(status_code=400, detail="WeChat login failed")
+        info_url = (
+            "https://api.weixin.qq.com/sns/userinfo?"
+            + urllib.parse.urlencode(
+                {"access_token": access_token, "openid": openid, "lang": "zh_CN"}
+            )
+        )
+        profile = _wechat_get_json(info_url)
+        provider_user_id = str(unionid or openid)
+        user = db.get_user_by_identity("wechat", provider_user_id)
+        if not user:
+            base_name = f"wx_{provider_user_id[:8]}"
+            candidate = base_name
+            index = 1
+            while db.get_user_by_username(candidate):
+                candidate = f"{base_name}_{index}"
+                index += 1
+            random_password = secrets.token_hex(16)
+            pwd_hash, pwd_salt = _hash_password(random_password)
+            user_id = db.create_user(candidate, pwd_hash, pwd_salt)
+            db.upsert_identity(user_id, "wechat", provider_user_id, profile)
+            user = db.get_user_by_id(user_id)
+        else:
+            db.upsert_identity(user.user_id, "wechat", provider_user_id, profile)
+        if not user:
+            raise HTTPException(status_code=500, detail="Unable to create WeChat user")
+        session = db.create_session(user.user_id)
+        response = RedirectResponse(redirect_url)
+        response.set_cookie(
+            "session_id",
+            session.session_id,
+            httponly=True,
+            samesite="lax",
+        )
+        return response
+
 
     @app.get("/api/settings", response_model=SettingsResponse)
-    def get_settings() -> SettingsResponse:
+    def get_settings(user: UserRecord = Depends(_require_user)) -> SettingsResponse:
+        user_settings = queue.get_settings(user.user_id)
         providers = ["openai", "deepseek", "qwen", "glm", "ollama", "sglang", "vllm"]
-        availability = {p: _provider_available(p) for p in providers}
-        sources = {p: _provider_key_source(p) for p in providers}
+        availability = {p: _provider_available(user.user_id, p) for p in providers}
+        sources = {p: _provider_key_source(user.user_id, p) for p in providers}
         asset_options = {
             "start_music": _list_asset_options("start_music"),
             "beginning": _list_asset_options("beginning"),
         }
         return SettingsResponse(
-            parallel_enabled=queue.parallel_enabled,
-            max_concurrent=queue.max_concurrent,
+            parallel_enabled=user_settings.parallel_enabled,
+            max_concurrent=user_settings.max_concurrent,
             max_queued=PipelineQueue.MAX_QUEUED,
-            tags=queue.tags,
+            tags=user_settings.tags,
             provider_availability=availability,
             provider_key_source=sources,
             asset_options=asset_options,
-            asset_selections=queue.asset_selections,
+            asset_selections=user_settings.asset_selections,
         )
 
     @app.post("/api/settings", response_model=SettingsResponse)
-    def update_settings(body: SettingsUpdate) -> SettingsResponse:
-        if body.parallel_enabled is not None:
-            queue.parallel_enabled = body.parallel_enabled
-        if body.max_concurrent is not None:
-            queue.max_concurrent = body.max_concurrent
-        if body.tags is not None:
-            queue.tags = body.tags
+    def update_settings(body: SettingsUpdate, user: UserRecord = Depends(_require_user)) -> SettingsResponse:
+        current = queue.get_settings(user.user_id)
+        merged_api_keys = current.api_keys
         if body.api_keys is not None:
-            merged = queue.api_keys
-            merged.update(body.api_keys)
-            queue.api_keys = merged
+            merged_api_keys.update(body.api_keys)
+        merged_assets = current.asset_selections
         if body.asset_selections is not None:
-            merged = queue.asset_selections
-            merged.update(body.asset_selections)
-            queue.asset_selections = merged
-        queue.save_state()
-        return get_settings()
+            merged_assets.update(body.asset_selections)
+        queue.update_settings(
+            user.user_id,
+            parallel_enabled=body.parallel_enabled,
+            max_concurrent=body.max_concurrent,
+            tags=body.tags,
+            api_keys=merged_api_keys,
+            asset_selections=merged_assets,
+        )
+        return get_settings(user)
 
     @app.post("/api/pipeline/start", response_model=PipelineJobResponse)
-    async def start_pipeline(req: PipelineStartRequest) -> PipelineJobResponse:
+    async def start_pipeline(
+        req: PipelineStartRequest,
+        user: UserRecord = Depends(_require_user),
+    ) -> PipelineJobResponse:
         sources = [v for v in (req.youtube_url, req.audio_url, req.audio_path) if v]
         if len(sources) != 1:
             raise HTTPException(
@@ -384,57 +578,83 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         if not req.model_name or not req.model_name.strip():
             raise HTTPException(status_code=400, detail="model_name is required")
         try:
-            job = await queue.enqueue(req, config_path)
+            job = await queue.enqueue(req, user.user_id, config_path)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         return PipelineJobResponse(
-            **job.to_response(queue_position=queue.queue_position(job.job_id))
+            **job.to_response(queue_position=queue.queue_position(user.user_id, job.job_id))
         )
 
     @app.post("/api/uploads/audio")
-    def upload_audio(file: UploadFile = File(...)):
+    def upload_audio(
+        file: UploadFile = File(...),
+        user: UserRecord = Depends(_require_user),
+    ):
         saved = _save_upload(file)
         return {"path": str(saved)}
 
     @app.get("/api/pipeline/jobs", response_model=PipelineListResponse)
-    def list_pipeline_jobs(include_steps: bool = Query(False)) -> PipelineListResponse:
+    def list_pipeline_jobs(
+        include_steps: bool = Query(False),
+        user: UserRecord = Depends(_require_user),
+    ) -> PipelineListResponse:
+        user_settings = queue.get_settings(user.user_id)
         return PipelineListResponse(
-            jobs=[PipelineJobResponse(**j) for j in queue.list_jobs(include_steps=include_steps)],
-            max_concurrent=queue.max_concurrent,
-            parallel_enabled=queue.parallel_enabled,
+            jobs=[
+                PipelineJobResponse(**j)
+                for j in queue.list_jobs(user.user_id, include_steps=include_steps)
+            ],
+            max_concurrent=user_settings.max_concurrent,
+            parallel_enabled=user_settings.parallel_enabled,
         )
 
     @app.get("/api/pipeline/jobs/{job_id}", response_model=PipelineJobResponse)
-    def get_pipeline_job(job_id: str) -> PipelineJobResponse:
-        job = queue.get_job(job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail="Job not found")
+    def get_pipeline_job(
+        job_id: str,
+        user: UserRecord = Depends(_require_user),
+    ) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id, user)
         return PipelineJobResponse(
-            **job.to_response(queue_position=queue.queue_position(job.job_id))
+            **job.to_response(queue_position=queue.queue_position(user.user_id, job.job_id))
         )
 
     @app.delete("/api/pipeline/jobs/{job_id}", response_model=PipelineJobResponse)
-    def delete_pipeline_job(job_id: str) -> PipelineJobResponse:
-        job = _get_job_or_404(job_id)
+    def delete_pipeline_job(
+        job_id: str,
+        user: UserRecord = Depends(_require_user),
+    ) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id, user)
         queue.delete_job(job_id)
         return PipelineJobResponse(
-            **job.to_response(queue_position=queue.queue_position(job.job_id))
+            **job.to_response(queue_position=queue.queue_position(user.user_id, job.job_id))
         )
 
 
     @app.post("/api/pipeline/queue/reorder", response_model=PipelineListResponse)
-    def reorder_pipeline_queue(body: QueueReorderRequest) -> PipelineListResponse:
-        queue.reorder_queue(body.job_ids)
+    def reorder_pipeline_queue(
+        body: QueueReorderRequest,
+        user: UserRecord = Depends(_require_user),
+    ) -> PipelineListResponse:
+        queue.reorder_queue(user.user_id, body.job_ids)
+        user_settings = queue.get_settings(user.user_id)
         return PipelineListResponse(
-            jobs=[PipelineJobResponse(**j) for j in queue.list_jobs(include_steps=False)],
-            max_concurrent=queue.max_concurrent,
-            parallel_enabled=queue.parallel_enabled,
+            jobs=[
+                PipelineJobResponse(**j)
+                for j in queue.list_jobs(user.user_id, include_steps=False)
+            ],
+            max_concurrent=user_settings.max_concurrent,
+            parallel_enabled=user_settings.parallel_enabled,
         )
 
 
     @app.post("/api/pipeline/jobs/{job_id}/metadata", response_model=PipelineJobResponse)
-    def update_pipeline_metadata(job_id: str, body: JobMetaUpdateRequest) -> PipelineJobResponse:
+    def update_pipeline_metadata(
+        job_id: str,
+        body: JobMetaUpdateRequest,
+        user: UserRecord = Depends(_require_user),
+    ) -> PipelineJobResponse:
         try:
+            _get_job_or_404(job_id, user)
             job = queue.update_job_meta(
                 job_id,
                 note=body.note,
@@ -445,15 +665,16 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
         return PipelineJobResponse(
-            **job.to_response(queue_position=queue.queue_position(job.job_id))
+            **job.to_response(queue_position=queue.queue_position(user.user_id, job.job_id))
         )
 
 
     @app.get("/api/pipeline/jobs/{job_id}/stream")
-    async def stream_pipeline_events(job_id: str):
-        job = queue.get_job(job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail="Job not found")
+    async def stream_pipeline_events(
+        job_id: str,
+        user: UserRecord = Depends(_require_user),
+    ):
+        job = _get_job_or_404(job_id, user)
 
         async def event_generator():
             async for ev in job.stream_events():
@@ -466,19 +687,27 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         return EventSourceResponse(event_generator())
 
     @app.post("/api/pipeline/jobs/{job_id}/speakers", response_model=PipelineJobResponse)
-    def submit_speakers(job_id: str, body: SpeakersSubmitRequest) -> PipelineJobResponse:
+    def submit_speakers(
+        job_id: str,
+        body: SpeakersSubmitRequest,
+        user: UserRecord = Depends(_require_user),
+    ) -> PipelineJobResponse:
         try:
+            _get_job_or_404(job_id, user)
             job = queue.submit_speakers(job_id, body.speakers_json)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         return PipelineJobResponse(
-            **job.to_response(queue_position=queue.queue_position(job.job_id))
+            **job.to_response(queue_position=queue.queue_position(user.user_id, job.job_id))
         )
 
 
     @app.post("/api/pipeline/jobs/{job_id}/speakers-redetect", response_model=PipelineJobResponse)
-    async def redetect_speakers(job_id: str) -> PipelineJobResponse:
-        job = _get_job_or_404(job_id)
+    async def redetect_speakers(
+        job_id: str,
+        user: UserRecord = Depends(_require_user),
+    ) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id, user)
         if not job.result:
             raise HTTPException(status_code=400, detail="Job results not available")
         transcript_path_value = job.result.get("transcript_path")
@@ -582,12 +811,15 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             },
         )
         return PipelineJobResponse(
-            **job.to_response(queue_position=queue.queue_position(job.job_id))
+            **job.to_response(queue_position=queue.queue_position(user.user_id, job.job_id))
         )
 
     @app.post("/api/pipeline/jobs/{job_id}/speakers-reclip", response_model=PipelineJobResponse)
-    async def reclip_speakers(job_id: str) -> PipelineJobResponse:
-        job = _get_job_or_404(job_id)
+    async def reclip_speakers(
+        job_id: str,
+        user: UserRecord = Depends(_require_user),
+    ) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id, user)
         if not job.result:
             raise HTTPException(status_code=400, detail="Job results not available")
         audio_path_value = job.result.get("audio_path")
@@ -680,13 +912,17 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         )
         emit("speakers", "completed", "Speaker clips updated", None)
         return PipelineJobResponse(
-            **job.to_response(queue_position=queue.queue_position(job.job_id))
+            **job.to_response(queue_position=queue.queue_position(user.user_id, job.job_id))
         )
 
 
     @app.post("/api/pipeline/jobs/{job_id}/speakers-reclip/{speaker_tag}", response_model=PipelineJobResponse)
-    async def reclip_speaker(job_id: str, speaker_tag: str) -> PipelineJobResponse:
-        job = _get_job_or_404(job_id)
+    async def reclip_speaker(
+        job_id: str,
+        speaker_tag: str,
+        user: UserRecord = Depends(_require_user),
+    ) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id, user)
         if not job.result:
             raise HTTPException(status_code=400, detail="Job results not available")
         audio_path_value = job.result.get("input_audio_path") or job.result.get("audio_path")
@@ -776,13 +1012,17 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         )
         emit("speakers", "completed", "Speaker clip updated", None)
         return PipelineJobResponse(
-            **job.to_response(queue_position=queue.queue_position(job.job_id))
+            **job.to_response(queue_position=queue.queue_position(user.user_id, job.job_id))
         )
 
 
     @app.post("/api/pipeline/jobs/{job_id}/speakers-redetect/{speaker_tag}", response_model=PipelineJobResponse)
-    async def redetect_speaker(job_id: str, speaker_tag: str) -> PipelineJobResponse:
-        job = _get_job_or_404(job_id)
+    async def redetect_speaker(
+        job_id: str,
+        speaker_tag: str,
+        user: UserRecord = Depends(_require_user),
+    ) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id, user)
         if not job.result:
             raise HTTPException(status_code=400, detail="Job results not available")
         translated_path_value = job.result.get("translated_path")
@@ -889,24 +1129,34 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             },
         )
         return PipelineJobResponse(
-            **job.to_response(queue_position=queue.queue_position(job.job_id))
+            **job.to_response(queue_position=queue.queue_position(user.user_id, job.job_id))
         )
 
     @app.get("/api/pipeline/jobs/{job_id}/speakers-template")
-    def get_speakers_template(job_id: str):
-        job = _get_job_or_404(job_id)
+    def get_speakers_template(
+        job_id: str,
+        user: UserRecord = Depends(_require_user),
+    ):
+        job = _get_job_or_404(job_id, user)
         speakers, detected = _speakers_template(job)
         return {"speakers": speakers, "detected_speakers": detected}
 
     @app.get("/api/pipeline/jobs/{job_id}/summary")
-    def get_summary(job_id: str):
-        job = _get_job_or_404(job_id)
+    def get_summary(
+        job_id: str,
+        user: UserRecord = Depends(_require_user),
+    ):
+        job = _get_job_or_404(job_id, user)
         _, summary_text = _summary_paths(job)
         return PlainTextResponse(summary_text)
 
     @app.post("/api/pipeline/jobs/{job_id}/summary", response_model=PipelineJobResponse)
-    def update_summary(job_id: str, body: SummaryUpdateRequest) -> PipelineJobResponse:
-        job = _get_job_or_404(job_id)
+    def update_summary(
+        job_id: str,
+        body: SummaryUpdateRequest,
+        user: UserRecord = Depends(_require_user),
+    ) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id, user)
         summary_path, _ = _summary_paths(job)
         summary_path.write_text(body.text, encoding="utf-8")
         summary_url = job.result.get("summary_url") if job.result else None
@@ -922,18 +1172,25 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             queue.update_job_result(job_id, {"summary_url": summary_url})
         queue.save_state()
         return PipelineJobResponse(
-            **job.to_response(queue_position=queue.queue_position(job.job_id))
+            **job.to_response(queue_position=queue.queue_position(user.user_id, job.job_id))
         )
 
     @app.get("/api/pipeline/jobs/{job_id}/translated")
-    def get_translated(job_id: str):
-        job = _get_job_or_404(job_id)
+    def get_translated(
+        job_id: str,
+        user: UserRecord = Depends(_require_user),
+    ):
+        job = _get_job_or_404(job_id, user)
         _, translated_text = _translated_paths(job)
         return PlainTextResponse(translated_text)
 
     @app.post("/api/pipeline/jobs/{job_id}/translated", response_model=PipelineJobResponse)
-    def update_translated(job_id: str, body: TranslationUpdateRequest) -> PipelineJobResponse:
-        job = _get_job_or_404(job_id)
+    def update_translated(
+        job_id: str,
+        body: TranslationUpdateRequest,
+        user: UserRecord = Depends(_require_user),
+    ) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id, user)
         translated_path, _ = _translated_paths(job)
         translated_path.write_text(body.text, encoding="utf-8")
         translated_url = job.result.get("translated_url") if job.result else None
@@ -949,12 +1206,15 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             queue.update_job_result(job_id, {"translated_url": translated_url})
         queue.save_state()
         return PipelineJobResponse(
-            **job.to_response(queue_position=queue.queue_position(job.job_id))
+            **job.to_response(queue_position=queue.queue_position(user.user_id, job.job_id))
         )
 
     @app.post("/api/pipeline/jobs/{job_id}/summary-audio", response_model=PipelineJobResponse)
-    async def generate_summary_audio(job_id: str) -> PipelineJobResponse:
-        job = _get_job_or_404(job_id)
+    async def generate_summary_audio(
+        job_id: str,
+        user: UserRecord = Depends(_require_user),
+    ) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id, user)
         summary_path, summary_text = _summary_paths(job)
         if not summary_text.strip():
             raise HTTPException(status_code=400, detail="Summary text is empty")
@@ -1013,12 +1273,15 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             },
         )
         return PipelineJobResponse(
-            **job.to_response(queue_position=queue.queue_position(job.job_id))
+            **job.to_response(queue_position=queue.queue_position(user.user_id, job.job_id))
         )
 
     @app.post("/api/pipeline/jobs/{job_id}/merge-audio", response_model=PipelineJobResponse)
-    def merge_final_audio(job_id: str) -> PipelineJobResponse:
-        job = _get_job_or_404(job_id)
+    def merge_final_audio(
+        job_id: str,
+        user: UserRecord = Depends(_require_user),
+    ) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id, user)
         if not job.result:
             raise HTTPException(status_code=400, detail="Job results not available")
         audio_path_value = job.result.get("audio_path")
@@ -1032,8 +1295,8 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         run_dir = Path(run_dir_value)
         output_path = run_dir / "final_audio.wav"
         inputs = [
-            _resolve_asset_for_type("start_music"),
-            _resolve_asset_for_type("beginning"),
+            _resolve_asset_for_type(user.user_id, "start_music"),
+            _resolve_asset_for_type(user.user_id, "beginning"),
             Path(summary_audio_value),
             Path(audio_path_value),
         ]
@@ -1057,12 +1320,16 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             },
         )
         return PipelineJobResponse(
-            **job.to_response(queue_position=queue.queue_position(job.job_id))
+            **job.to_response(queue_position=queue.queue_position(user.user_id, job.job_id))
         )
 
     @app.post("/api/pipeline/jobs/{job_id}/tts", response_model=PipelineJobResponse)
-    async def regenerate_audio(job_id: str, body: SpeakersSubmitRequest) -> PipelineJobResponse:
-        job = _get_job_or_404(job_id)
+    async def regenerate_audio(
+        job_id: str,
+        body: SpeakersSubmitRequest,
+        user: UserRecord = Depends(_require_user),
+    ) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id, user)
         if not body.speakers_json.strip():
             raise HTTPException(status_code=400, detail="speakers_json is required")
         run_dir_value = job.result.get("run_dir") if job.result else None
@@ -1136,13 +1403,16 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             },
         )
         return PipelineJobResponse(
-            **job.to_response(queue_position=queue.queue_position(job.job_id))
+            **job.to_response(queue_position=queue.queue_position(user.user_id, job.job_id))
         )
 
 
     @app.get("/api/pipeline/jobs/{job_id}/export")
-    def export_pipeline(job_id: str):
-        job = _get_job_or_404(job_id)
+    def export_pipeline(
+        job_id: str,
+        user: UserRecord = Depends(_require_user),
+    ):
+        job = _get_job_or_404(job_id, user)
         if job.status != "completed":
             raise HTTPException(status_code=400, detail="Pipeline must be completed to export")
         if not job.result or not job.result.get("merged_audio_path"):
@@ -1154,7 +1424,11 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
 
 
     @app.post("/api/assets/upload")
-    def upload_asset(asset_type: str = Query(..., regex="^(start_music|beginning)$"), file: UploadFile = File(...)):
+    def upload_asset(
+        asset_type: str = Query(..., regex="^(start_music|beginning)$"),
+        file: UploadFile = File(...),
+        user: UserRecord = Depends(_require_user),
+    ):
         if not file.filename:
             raise HTTPException(status_code=400, detail="Missing filename")
         if Path(file.filename).suffix.lower() != ".wav":
@@ -1170,8 +1444,9 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
     @app.get("/api/artifacts/download")
     def download_artifact(
         path: str = Query(..., description="Relative path under output/ or runs/"),
+        user: UserRecord = Depends(_require_user),
     ):
-        full = _allowed_path(path)
+        full = _allowed_user_path(user, path)
         if not full.is_file():
             raise HTTPException(status_code=400, detail="Not a file")
         return FileResponse(full, filename=full.name)
@@ -1179,8 +1454,9 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
     @app.get("/api/artifacts/preview/summary")
     def preview_summary(
         path: str = Query(..., description="Relative path under output/ (e.g. output/sp1_video.txt)"),
+        user: UserRecord = Depends(_require_user),
     ):
-        full = _allowed_path(path)
+        full = _allowed_user_path(user, path)
         if not full.is_file() or full.suffix.lower() != ".txt":
             raise HTTPException(status_code=400, detail="Not a summary text file")
 #        return PlainTextResponse(full.read_text(encoding="utf-8"))
@@ -1196,8 +1472,9 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
     @app.get("/api/artifacts/preview/audio")
     def preview_audio(
         path: str = Query(..., description="Relative path under output/ (e.g. output/sp1_video.wav)"),
+        user: UserRecord = Depends(_require_user),
     ):
-        full = _allowed_path(path)
+        full = _allowed_user_path(user, path)
         if not full.is_file() or full.suffix.lower() not in (".wav", ".mp3"):
             raise HTTPException(status_code=400, detail="Not an audio file")
         return FileResponse(full, media_type="audio/wav" if full.suffix.lower() == ".wav" else "audio/mpeg")

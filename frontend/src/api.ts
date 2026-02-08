@@ -3,6 +3,7 @@ import type {
   PipelineListResponse,
   PipelineStartRequest,
   SettingsResponse,
+  User,
 } from "./types";
 
 const API_BASE = "";
@@ -13,6 +14,7 @@ async function request<T>(
 ): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...options.headers,
@@ -27,6 +29,28 @@ async function request<T>(
 
 export async function getSettings(): Promise<SettingsResponse> {
   return request("/api/settings");
+}
+
+export async function getMe(): Promise<User> {
+  return request("/api/me");
+}
+
+export async function login(username: string, password: string): Promise<User> {
+  return request("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export async function logout(): Promise<{ success: boolean }> {
+  return request("/api/auth/logout", {
+    method: "POST",
+  });
+}
+
+export async function startWeChatLogin(redirect?: string): Promise<{ url: string }> {
+  const query = redirect ? `?redirect=${encodeURIComponent(redirect)}` : "";
+  return request(`/api/auth/wechat/start${query}`);
 }
 
 export async function updateSettings(body: {
@@ -113,7 +137,9 @@ export async function regenerateJobAudio(
 
 
 export async function getJobSummary(jobId: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/pipeline/jobs/${jobId}/summary`);
+  const res = await fetch(`${API_BASE}/api/pipeline/jobs/${jobId}/summary`, {
+    credentials: "include",
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error((err as { detail?: string }).detail ?? "Request failed");
@@ -122,7 +148,9 @@ export async function getJobSummary(jobId: string): Promise<string> {
 }
 
 export async function getJobTranslation(jobId: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/pipeline/jobs/${jobId}/translated`);
+  const res = await fetch(`${API_BASE}/api/pipeline/jobs/${jobId}/translated`, {
+    credentials: "include",
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error((err as { detail?: string }).detail ?? "Request failed");
@@ -178,6 +206,7 @@ export async function uploadAudio(file: File): Promise<{ path: string }> {
   form.append("file", file);
   const res = await fetch(`${API_BASE}/api/uploads/audio`, {
     method: "POST",
+    credentials: "include",
     body: form,
   });
   if (!res.ok) {
@@ -192,7 +221,7 @@ export function streamJobEvents(
   onEvent: (event: string, data: unknown) => void
 ): () => void {
   const url = `${API_BASE}/api/pipeline/jobs/${jobId}/stream`;
-  const es = new EventSource(url);
+  const es = new EventSource(url, { withCredentials: true });
   es.addEventListener("progress", (e: MessageEvent) => {
     try {
       const data = JSON.parse(e.data);
@@ -237,6 +266,7 @@ export async function uploadAsset(
     `${API_BASE}/api/assets/upload?asset_type=${encodeURIComponent(assetType)}`,
     {
       method: "POST",
+      credentials: "include",
       body: form,
     }
   );

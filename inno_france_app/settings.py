@@ -25,6 +25,7 @@ class AppSettings:
     project_root: Path
     output_dir: Path
     runs_dir: Path
+    db_path: Path
     python_cmd: str
     yt_extractor_dir: Path
     asr_dir: Path
@@ -36,6 +37,11 @@ class AppSettings:
     s3_access_key: str
     s3_secret_key: str
     s3_prefix: str
+    cors_origins: list[str]
+    web_base_url: str
+    wechat_app_id: str
+    wechat_app_secret: str
+    wechat_redirect_uri: str
 
 
 def load_settings() -> AppSettings:
@@ -46,6 +52,9 @@ def load_settings() -> AppSettings:
         os.getenv("INNOFRANCE_RUNS_DIR", project_root / "InnoFranceApp" / "runs")
     ).expanduser().resolve()
     output_dir = runs_dir
+    db_path = Path(
+        os.getenv("INNOFRANCE_DB_PATH", runs_dir / "app.db")
+    ).expanduser().resolve()
 
     yt_extractor_dir = Path(
         os.getenv("INNOFRANCE_YT_EXTRACTOR_DIR", project_root / "InnoFranceYTAudioExtractor")
@@ -67,6 +76,7 @@ def load_settings() -> AppSettings:
         project_root=project_root,
         output_dir=output_dir,
         runs_dir=runs_dir,
+        db_path=db_path,
         python_cmd=python_cmd,
         yt_extractor_dir=yt_extractor_dir,
         asr_dir=asr_dir,
@@ -78,4 +88,13 @@ def load_settings() -> AppSettings:
         s3_access_key=os.getenv("INNOFRANCE_S3_ACCESS_KEY", ""),
         s3_secret_key=os.getenv("INNOFRANCE_S3_SECRET_KEY", ""),
         s3_prefix=os.getenv("INNOFRANCE_S3_PREFIX", "inno_france"),
+        cors_origins=[
+            item.strip()
+            for item in os.getenv("INNOFRANCE_CORS_ORIGINS", "").split(",")
+            if item.strip()
+        ],
+        web_base_url=os.getenv("INNOFRANCE_WEB_BASE_URL", ""),
+        wechat_app_id=os.getenv("WECHAT_APP_ID", ""),
+        wechat_app_secret=os.getenv("WECHAT_APP_SECRET", ""),
+        wechat_redirect_uri=os.getenv("WECHAT_REDIRECT_URI", ""),
     )
