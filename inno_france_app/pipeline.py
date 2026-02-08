@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import unicodedata
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .config import AppConfig
+from .logging_utils import log_event, setup_logging
 from .mcp_clients import MCPToolClient
 from .speaker_profiles import build_speaker_configs
 from .text_utils import normalize_translation_text, parse_speaker_lines
@@ -48,6 +50,7 @@ class PipelineResult:
 class InnoFrancePipeline:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
+        self._logger = setup_logging()
 
     async def run(
         self,
@@ -111,7 +114,13 @@ class InnoFrancePipeline:
                 _relative_to_runs(audio_path, runs_dir),
             )
         elif source_kind == "audio_url":
-            audio_path = await asyncio.to_thread(_download_audio_to_run, audio_url or "", run_dir)
+            audio_path = await asyncio.to_thread(
+                _download_audio_to_run,
+                audio_url or "",
+                run_dir,
+                yt_user_agent,
+                self._logger,
+            )
             base_name = _sanitize_base_name(Path(audio_path).name) or base_name
             _emit(
                 "youtube_audio",
@@ -455,13 +464,52 @@ def _copy_audio_to_run(source_path: Path, run_dir: Path) -> Path:
     return target
 
 
-def _download_audio_to_run(url: str, run_dir: Path) -> Path:
+def _download_audio_to_run(
+    url: str,
+    run_dir: Path,
+    user_agent: Optional[str] = None,
+    logger: Optional[Any] = None,
+) -> Path:
     parsed = urllib.parse.urlparse(url)
     filename = Path(parsed.path).name or "audio.mp3"
     target = run_dir / filename
-    with urllib.request.urlopen(url) as response:
-        with open(target, "wb") as f:
-            shutil.copyfileobj(response, f)
+    headers = {
+        "User-Agent": user_agent
+        or "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/122.0 Safari/537.36",
+        "Accept": "*/*",
+    }
+    request = urllib.request.Request(url, headers=headers)
+    if logger:
+        log_event(logger, "audio_url_download_start", url=url, filename=filename)
+    try:
+        with urllib.request.urlopen(request) as response:
+            if logger:
+                log_event(
+                    logger,
+                    "audio_url_download_response",
+                    url=url,
+                    status=getattr(response, "status", None),
+                    content_type=response.headers.get("Content-Type"),
+                    content_length=response.headers.get("Content-Length"),
+                )
+            with open(target, "wb") as f:
+                shutil.copyfileobj(response, f)
+    except urllib.error.HTTPError as exc:
+        if logger:
+            log_event(
+                logger,
+                "audio_url_download_error",
+                url=url,
+                status=exc.code,
+                reason=str(exc.reason),
+                headers=dict(exc.headers or {}),
+            )
+        raise ValueError(f"Audio URL download failed ({exc.code} {exc.reason})") from exc
+    except Exception as exc:
+        if logger:
+            log_event(logger, "audio_url_download_error", url=url, error=str(exc))
+        raise
     return target
 
 

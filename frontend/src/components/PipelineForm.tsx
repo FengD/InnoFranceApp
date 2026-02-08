@@ -74,56 +74,58 @@ export function PipelineForm({
 
   return (
     <form className="form" onSubmit={handleSubmit}>
-      <div className="form-group">
-        <label>Source</label>
-        <select
-          value={sourceType}
-          onChange={(e) => setSourceType(e.target.value as SourceType)}
-        >
-          <option value="youtube">YouTube URL</option>
-          <option value="audio_url">Audio URL</option>
-          <option value="audio_path">Local audio path</option>
-        </select>
+      <div className="form-row form-row--source">
+        <div className="form-group">
+          <label>Source</label>
+          <select
+            value={sourceType}
+            onChange={(e) => setSourceType(e.target.value as SourceType)}
+          >
+            <option value="youtube">YouTube URL</option>
+            <option value="audio_url">Audio URL</option>
+            <option value="audio_path">Local audio path</option>
+          </select>
+        </div>
+        {sourceType === "youtube" && (
+          <div className="form-group">
+            <label htmlFor="youtube-url">YouTube URL</label>
+            <input
+              id="youtube-url"
+              type="url"
+              value={youtubeUrl}
+              onChange={(e) => setYoutubeUrl(e.target.value)}
+              placeholder="https://www.youtube.com/watch?v=..."
+            />
+          </div>
+        )}
+        {sourceType === "audio_url" && (
+          <div className="form-group">
+            <label htmlFor="audio-url">Audio URL</label>
+            <input
+              id="audio-url"
+              type="url"
+              value={audioUrl}
+              onChange={(e) => setAudioUrl(e.target.value)}
+              placeholder="https://example.com/audio.mp3"
+            />
+          </div>
+        )}
+        {sourceType === "audio_path" && (
+          <div className="form-group">
+            <label htmlFor="audio-file">Local audio file</label>
+            <input
+              id="audio-file"
+              type="file"
+              accept=".mp3,.wav,audio/mpeg,audio/wav"
+              onChange={(e) => setAudioFile(e.target.files?.[0] ?? null)}
+            />
+            {audioFile && (
+              <span className="muted">Selected: {audioFile.name}</span>
+            )}
+          </div>
+        )}
       </div>
-      {sourceType === "youtube" && (
-        <div className="form-group">
-          <label htmlFor="youtube-url">YouTube URL</label>
-          <input
-            id="youtube-url"
-            type="url"
-            value={youtubeUrl}
-            onChange={(e) => setYoutubeUrl(e.target.value)}
-            placeholder="https://www.youtube.com/watch?v=..."
-          />
-        </div>
-      )}
-      {sourceType === "audio_url" && (
-        <div className="form-group">
-          <label htmlFor="audio-url">Audio URL</label>
-          <input
-            id="audio-url"
-            type="url"
-            value={audioUrl}
-            onChange={(e) => setAudioUrl(e.target.value)}
-            placeholder="https://example.com/audio.mp3"
-          />
-        </div>
-      )}
-      {sourceType === "audio_path" && (
-        <div className="form-group">
-          <label htmlFor="audio-file">Local audio file</label>
-          <input
-            id="audio-file"
-            type="file"
-            accept=".mp3,.wav,audio/mpeg,audio/wav"
-            onChange={(e) => setAudioFile(e.target.files?.[0] ?? null)}
-          />
-          {audioFile && (
-            <span className="muted">Selected: {audioFile.name}</span>
-          )}
-        </div>
-      )}
-      <div className="form-row">
+      <div className="form-row form-row--compact">
         <div className="form-group">
           <label htmlFor="provider">Provider</label>
           <select

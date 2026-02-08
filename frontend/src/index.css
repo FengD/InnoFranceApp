@@ -200,6 +200,25 @@ a:hover {
 
 .form-row .form-group {
   min-width: 120px;
+  flex: 1;
+}
+
+.form-row--source .form-group,
+.form-row--compact .form-group {
+  flex: 1;
+  min-width: 140px;
+}
+
+.form-row--source .form-group input,
+.form-row--source .form-group select,
+.form-row--compact .form-group input,
+.form-row--compact .form-group select {
+  max-width: none;
+  width: 100%;
+}
+
+.form-row--compact {
+  gap: 0.75rem;
 }
 
 .form-actions {
@@ -405,6 +424,9 @@ a:hover {
 
 .job-progress {
   margin-bottom: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
 }
 
 .progress-bar {
@@ -426,8 +448,11 @@ a:hover {
   color: var(--text-muted);
 }
 
-.job-details-toggle {
-  margin-bottom: 0.5rem;
+.job-progress-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
 }
 
 .job-steps {
@@ -604,6 +629,21 @@ a:hover {
   padding: 0.4rem 0.5rem;
   background: var(--surface);
   color: var(--text);
+}
+
+.modal-input {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  width: 100%;
+}
+
+.modal-textarea {
+  min-height: 64px;
+  resize: vertical;
 }
 
 .job-meta-actions {

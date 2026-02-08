@@ -82,6 +82,7 @@ export function JobCard({
   const [nameInput, setNameInput] = useState(job.custom_name ?? "");
   const [tagSaving, setTagSaving] = useState(false);
   const [tagError, setTagError] = useState<string | null>(null);
+  const [tagOpen, setTagOpen] = useState(false);
   const [publishedSaving, setPublishedSaving] = useState(false);
   const [publishedError, setPublishedError] = useState<string | null>(null);
 
@@ -182,6 +183,7 @@ export function JobCard({
     setNoteText(job.note ?? "");
     setNoteDirty(false);
     setNoteOpen(false);
+    setTagOpen(false);
     setNameInput(job.custom_name ?? "");
     setClipNonce(0);
   }, [job.job_id]);
@@ -444,6 +446,16 @@ export function JobCard({
               >
                 Note
               </button>
+              {availableTags.length > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setTagOpen((v) => !v)}
+                  aria-expanded={tagOpen}
+                >
+                  Tags
+                </button>
+              )}
             </>
           )}
         </div>
@@ -467,37 +479,36 @@ export function JobCard({
         )}
       </div>
 
-      {(job.status === "running" || job.status === "completed") && (
-        <div className="job-progress">
+      <div className="job-progress">
+        {(job.status === "running" || job.status === "completed") && (
           <div className="progress-bar">
             <div
               className="progress-fill"
               style={{ width: `${progressPercent}%` }}
             />
           </div>
+        )}
+        <div className="job-progress-row">
           <span className="progress-label">
             {completedCount} / {STEP_ORDER.length} steps
           </span>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => {
+              setShowDetails((v) => {
+                const next = !v;
+                if (next && job.steps.length === 0) {
+                  onRefresh();
+                }
+                return next;
+              });
+            }}
+            aria-expanded={showDetails}
+          >
+            {showDetails ? "Hide details" : "Show details"}
+          </button>
         </div>
-      )}
-
-      <div className="job-details-toggle">
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm"
-          onClick={() => {
-            setShowDetails((v) => {
-              const next = !v;
-              if (next && job.steps.length === 0) {
-                onRefresh();
-              }
-              return next;
-            });
-          }}
-          aria-expanded={showDetails}
-        >
-          {showDetails ? "Hide details" : "Show details"}
-        </button>
       </div>
 
       {showDetails && (
@@ -629,7 +640,7 @@ export function JobCard({
 
       {job.status === "completed" && (
         <div className="job-meta">
-          {availableTags.length > 0 && (
+          {tagOpen && availableTags.length > 0 && (
             <div className="job-meta-row">
               <span className="job-meta-label">Tags</span>
               <div className="tag-picker">
@@ -971,6 +982,7 @@ export function JobCard({
             <h4>Rename pipeline</h4>
             <input
               type="text"
+              className="modal-input"
               value={nameInput}
               onChange={(e) => setNameInput(e.target.value)}
               placeholder="Custom name"
@@ -1003,7 +1015,7 @@ export function JobCard({
           <div className="rename-modal-inner">
             <h4>Note</h4>
             <textarea
-              className="job-note"
+              className="modal-input modal-textarea"
               value={noteText}
               onChange={(e) => {
                 setNoteText(e.target.value);

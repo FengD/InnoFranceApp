@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from ..config import load_app_config
+from ..logging_utils import log_event, setup_logging
 from ..s3 import S3Client
 from ..pipeline import InnoFrancePipeline, PipelineResult
 from .schemas import PipelineStartRequest, StepEvent
@@ -138,6 +139,7 @@ class PipelineQueue:
         self._state_path = state_path
         self._s3_client = s3_client
         self._runs_dir = runs_dir
+        self._logger = setup_logging()
         self._load_state()
 
     @property
@@ -303,6 +305,15 @@ class PipelineQueue:
                     progress_queue.put_nowait(ev)
                 except asyncio.QueueFull:
                     pass
+                log_event(
+                    self._logger,
+                    "pipeline_step",
+                    job_id=job_id,
+                    step=step,
+                    status=status,
+                    message=message,
+                    detail=detail,
+                )
 
             job = PipelineJob(
                 job_id=job_id,
@@ -317,6 +328,20 @@ class PipelineQueue:
             self._queue_order.append(job_id)
             self._save_state()
 
+        log_event(
+            self._logger,
+            "job_enqueued",
+            job_id=job_id,
+            youtube_url=req.youtube_url,
+            audio_url=req.audio_url,
+            audio_path=req.audio_path,
+            provider=req.provider,
+            model_name=req.model_name,
+            language=req.language,
+            chunk_length=req.chunk_length,
+            speed=req.speed,
+            manual_speakers=req.manual_speakers,
+        )
         asyncio.create_task(self._run_job(job_id, req, on_progress, progress_queue, config_path))
         return job
 
@@ -344,6 +369,12 @@ class PipelineQueue:
         job.status = "running"
         job.started_at = datetime.utcnow()
         self._save_state()
+        log_event(
+            self._logger,
+            "job_started",
+            job_id=job_id,
+            started_at=job.started_at.isoformat() + "Z",
+        )
 
         try:
             config = load_app_config(config_path)
@@ -472,9 +503,27 @@ class PipelineQueue:
                 "input_audio_url": input_audio_url,
                 "speaker_audio_urls": speaker_audio_urls,
             }
+            log_event(
+                self._logger,
+                "job_completed",
+                job_id=job_id,
+                finished_at=datetime.utcnow().isoformat() + "Z",
+                run_dir=str(result.run_dir),
+            )
         except Exception as e:
             job.status = "failed"
             job.error = str(e)
+            self._logger.exception(
+                json.dumps(
+                    {
+                        "event": "job_failed",
+                        "ts": datetime.utcnow().isoformat() + "Z",
+                        "job_id": job_id,
+                        "error": str(e),
+                    },
+                    ensure_ascii=False,
+                )
+            )
         finally:
             job.finished_at = datetime.utcnow()
             try:
