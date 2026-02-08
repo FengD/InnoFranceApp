@@ -61,4 +61,4 @@ RUN git clone https://github.com/MoonshotAI/Kimi-Audio /workspace/Kimi-Audio \
 COPY InnoFranceApp/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-ENTRYPOINT ["/bin/bash"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
