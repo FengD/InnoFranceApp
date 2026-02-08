@@ -1,0 +1,30 @@
+services:
+  inno-france-app:
+    build:
+      context: ../..
+      dockerfile: InnoFranceApp/docker/Dockerfile
+    container_name: inno-france-app
+    init: true
+    ports:
+      - "8000:8000"
+      - "8003:8003"
+    environment:
+      INNOFRANCE_PROJECT_ROOT: /workspace
+      INNOFRANCE_RUNS_DIR: /workspace/InnoFranceApp/runs
+      INNOFRANCE_PYTHON_CMD: python3
+      INNOFRANCE_YT_EXTRACTOR_DIR: /workspace/InnoFranceYTAudioExtractor
+      INNOFRANCE_ASR_DIR: /workspace/InnoFranceASRService
+      INNOFRANCE_TRANSLATE_DIR: /workspace/InnoFranceTranslateAGENT
+      INNOFRANCE_TTS_DIR: /workspace/InnoFranceVoiceGenerateAgent
+      INNOFRANCE_SPEAKER_DETECT_DIR: /workspace/InnoFranceSpeakerDetect
+      PYTHONPATH: /workspace/InnoFranceApp:/workspace
+    volumes:
+      - ../..:/workspace
+      - ${INNOFRANCE_MODELS_DIR:-../models}:/workspace/models
+      - frontend_node_modules:/workspace/InnoFranceApp/frontend/node_modules
+    gpus: all
+    shm_size: "2gb"
+    restart: unless-stopped
+
+volumes:
+  frontend_node_modules:
