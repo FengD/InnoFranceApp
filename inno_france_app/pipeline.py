@@ -630,10 +630,19 @@ def _pick_representative_segments(
         ]
         if preferred:
             preferred.sort(key=lambda d: abs(float(d["duration"]) - target))
-            selected[speaker] = preferred[0]
+            chosen = preferred[0]
         else:
             segments.sort(key=lambda d: float(d.get("duration", 0)), reverse=True)
-            selected[speaker] = segments[0]
+            chosen = segments[0]
+        duration = float(chosen.get("duration", 0))
+        if duration > max_duration:
+            start = float(chosen.get("start", 0))
+            trimmed = dict(chosen)
+            trimmed["end"] = start + max_duration
+            trimmed["duration"] = max_duration
+            selected[speaker] = trimmed
+        else:
+            selected[speaker] = chosen
     return selected
 
 
