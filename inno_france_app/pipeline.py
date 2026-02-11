@@ -47,6 +47,9 @@ class PipelineResult:
     speaker_audio_tags: list[str] = field(default_factory=list)
 
 
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".webm"}
+
+
 class InnoFrancePipeline:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -86,9 +89,15 @@ class InnoFrancePipeline:
         run_dir.mkdir(parents=True, exist_ok=True)
 
         if audio_path and not _is_audio_path(audio_path):
-            raise ValueError("audio-path must be an existing .mp3 or .wav file")
+            raise ValueError(
+                "audio-path must be an existing audio file "
+                f"({', '.join(sorted(AUDIO_EXTENSIONS))})"
+            )
         if audio_url and not _is_audio_url(audio_url):
-            raise ValueError("audio-url must be an http(s) URL ending with .mp3 or .wav")
+            raise ValueError(
+                "audio-url must be an http(s) URL ending with an audio extension "
+                f"({', '.join(sorted(AUDIO_EXTENSIONS))})"
+            )
 
         services = self.config.services
         yt_client = MCPToolClient(_require_service(services, "youtube_audio"))
@@ -446,14 +455,14 @@ def _detect_source_kind(
 
 def _is_audio_path(value: str) -> bool:
     path = Path(value).expanduser()
-    return path.exists() and path.suffix.lower() in {".mp3", ".wav"}
+    return path.exists() and path.suffix.lower() in AUDIO_EXTENSIONS
 
 
 def _is_audio_url(value: str) -> bool:
     parsed = urllib.parse.urlparse(value)
     if parsed.scheme not in {"http", "https"}:
         return False
-    return parsed.path.lower().endswith((".mp3", ".wav"))
+    return parsed.path.lower().endswith(tuple(AUDIO_EXTENSIONS))
 
 
 def _copy_audio_to_run(source_path: Path, run_dir: Path) -> Path:
