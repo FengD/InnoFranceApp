@@ -4,13 +4,13 @@ import {
   exportJobUrl,
   generateSummaryAudio,
   getJobSpeakersTemplate,
-  getJobTranslation,
+  getJobPolish,
   getJobSummary,
   mergeFinalAudio,
   previewAudioUrl,
   regenerateJobAudio,
   submitSpeakers,
-  updateJobTranslation,
+  updateJobPolish,
   updateJobSummary,
 } from "../api";
 import type { PipelineJob } from "../types";
@@ -19,6 +19,7 @@ const STEP_ORDER = [
   "youtube_audio",
   "asr",
   "translate",
+  "polish",
   "summary",
   "speakers",
   "tts",
@@ -53,12 +54,12 @@ export function JobCard({
   const [summarySaving, setSummarySaving] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [summaryDirty, setSummaryDirty] = useState(false);
-  const [previewTranslation, setPreviewTranslation] = useState(false);
-  const [translationText, setTranslationText] = useState("");
-  const [translationLoading, setTranslationLoading] = useState(false);
-  const [translationSaving, setTranslationSaving] = useState(false);
-  const [translationError, setTranslationError] = useState<string | null>(null);
-  const [translationDirty, setTranslationDirty] = useState(false);
+  const [previewPolish, setPreviewPolish] = useState(false);
+  const [polishText, setPolishText] = useState("");
+  const [polishLoading, setPolishLoading] = useState(false);
+  const [polishSaving, setPolishSaving] = useState(false);
+  const [polishError, setPolishError] = useState<string | null>(null);
+  const [polishDirty, setPolishDirty] = useState(false);
   const [speakerJson, setSpeakerJson] = useState("");
   const [speakerSubmitting, setSpeakerSubmitting] = useState(false);
   const [speakerError, setSpeakerError] = useState<string | null>(null);
@@ -128,11 +129,11 @@ export function JobCard({
   const waitingSpeakers =
     stepMap.get("speakers")?.status === "waiting" ||
     (job.speaker_required && !job.speaker_submitted);
-  const canEditTranslation =
+  const canEditPolish =
     job.speaker_required &&
-    (stepMap.get("translate")?.status === "completed" ||
-      Boolean(result?.translated_path) ||
-      Boolean(result?.translated_relative));
+    (stepMap.get("polish")?.status === "completed" ||
+      Boolean(result?.polished_path) ||
+      Boolean(result?.polished_relative));
 
   useEffect(() => {
     if (!previewSummary || !job.job_id) {
@@ -152,23 +153,21 @@ export function JobCard({
   }, [previewSummary, job.job_id]);
 
   useEffect(() => {
-    if (!previewTranslation || !job.job_id) {
+    if (!previewPolish || !job.job_id) {
       return;
     }
-    setTranslationLoading(true);
-    setTranslationError(null);
-    getJobTranslation(job.job_id)
+    setPolishLoading(true);
+    setPolishError(null);
+    getJobPolish(job.job_id)
       .then((text) => {
-        setTranslationText(text);
-        setTranslationDirty(false);
+        setPolishText(text);
+        setPolishDirty(false);
       })
       .catch((err) => {
-        setTranslationError(
-          err instanceof Error ? err.message : "Failed to load translation"
-        );
+        setPolishError(err instanceof Error ? err.message : "Failed to load polish");
       })
-      .finally(() => setTranslationLoading(false));
-  }, [previewTranslation, job.job_id]);
+      .finally(() => setPolishLoading(false));
+  }, [previewPolish, job.job_id]);
 
   useEffect(() => {
     setSpeakerTemplateLoaded(false);
@@ -178,6 +177,7 @@ export function JobCard({
     setOutputsOpen(false);
     setPreviewSummary(false);
     setPreviewAudio(false);
+    setPreviewPolish(false);
     setShowRegenerate(false);
     setShowSpeakerClips(false);
     setNoteText(job.note ?? "");
@@ -256,19 +256,17 @@ export function JobCard({
     }
   };
 
-  const handleTranslationSave = async () => {
-    setTranslationSaving(true);
-    setTranslationError(null);
+  const handlePolishSave = async () => {
+    setPolishSaving(true);
+    setPolishError(null);
     try {
-      await updateJobTranslation(job.job_id, translationText);
-      setTranslationDirty(false);
+      await updateJobPolish(job.job_id, polishText);
+      setPolishDirty(false);
       onRefresh();
     } catch (err) {
-      setTranslationError(
-        err instanceof Error ? err.message : "Failed to save translation"
-      );
+      setPolishError(err instanceof Error ? err.message : "Failed to save polish");
     } finally {
-      setTranslationSaving(false);
+      setPolishSaving(false);
     }
   };
 
@@ -522,11 +520,13 @@ export function JobCard({
                   ? "Transcription"
                   : stepKey === "translate"
                     ? "Translation"
-                    : stepKey === "summary"
-                      ? "Summary"
-                      : stepKey === "speakers"
-                        ? "Speakers"
-                        : "TTS";
+                    : stepKey === "polish"
+                      ? "Polish"
+                      : stepKey === "summary"
+                        ? "Summary"
+                        : stepKey === "speakers"
+                          ? "Speakers"
+                          : "TTS";
             return (
               <div
                 key={stepKey}
@@ -554,44 +554,40 @@ export function JobCard({
               <span className="job-step-message">
                 Paste speaker JSON to continue voice synthesis.
               </span>
-              {canEditTranslation && (
+              {canEditPolish && (
                 <div className="job-translation">
                   <button
                     type="button"
                     className="btn btn-ghost btn-sm"
-                    onClick={() => setPreviewTranslation((v) => !v)}
+                    onClick={() => setPreviewPolish((v) => !v)}
                   >
-                    {previewTranslation
-                      ? "Hide translation"
-                      : "Preview translation"}
+                    {previewPolish ? "Hide polish" : "Preview polish"}
                   </button>
-                  {previewTranslation && (
+                  {previewPolish && (
                     <div className="artifact-preview">
-                      {translationLoading ? (
-                        <p className="muted">Loading translation…</p>
+                      {polishLoading ? (
+                        <p className="muted">Loading polish…</p>
                       ) : (
                         <>
                           <textarea
                             className="preview-textarea"
-                            value={translationText}
+                            value={polishText}
                             onChange={(e) => {
-                              setTranslationText(e.target.value);
-                              setTranslationDirty(true);
+                              setPolishText(e.target.value);
+                              setPolishDirty(true);
                             }}
                           />
                           <div className="artifact-actions">
                             <button
                               type="button"
                               className="btn btn-primary btn-sm"
-                              onClick={handleTranslationSave}
-                              disabled={translationSaving || !translationDirty}
+                              onClick={handlePolishSave}
+                              disabled={polishSaving || !polishDirty}
                             >
-                              {translationSaving
-                                ? "Saving…"
-                                : "Save translation"}
+                              {polishSaving ? "Saving…" : "Save polish"}
                             </button>
-                            {translationError && (
-                              <span className="muted">{translationError}</span>
+                            {polishError && (
+                              <span className="muted">{polishError}</span>
                             )}
                           </div>
                         </>

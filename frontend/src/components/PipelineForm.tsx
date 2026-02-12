@@ -234,10 +234,10 @@ export function PipelineForm({
             checked={manualSpeakers}
             onChange={(e) => setManualSpeakers(e.target.checked)}
           />
-          Provide speaker JSON after translation
+          Provide speaker JSON after polish
         </label>
         <p className="muted" style={{ marginTop: "0.25rem", marginBottom: 0 }}>
-          If enabled, the pipeline pauses after translation and waits for your
+          If enabled, the pipeline pauses after polish and waits for your
           speaker configs before voice synthesis.
         </p>
       </div>

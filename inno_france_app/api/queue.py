@@ -301,23 +301,27 @@ class PipelineQueue:
                 job = self._jobs.get(job_id)
                 if job:
                     job.steps.append(ev)
-                    if (
-                        step == "translate"
-                        and status == "completed"
-                        and detail
-                        and self._runs_dir
-                    ):
+                    if status == "completed" and detail and self._runs_dir:
                         rel_path = _extract_detail_path(detail)
                         if rel_path:
-                            translated_path = (self._runs_dir / rel_path).resolve()
+                            resolved_path = (self._runs_dir / rel_path).resolve()
                             job.result = job.result or {}
-                            job.result["translated_path"] = str(translated_path)
-                            try:
-                                job.result["translated_relative"] = str(
-                                    translated_path.relative_to(self._runs_dir.resolve())
-                                )
-                            except ValueError:
-                                job.result["translated_relative"] = translated_path.name
+                            if step == "translate":
+                                job.result["translated_path"] = str(resolved_path)
+                                try:
+                                    job.result["translated_relative"] = str(
+                                        resolved_path.relative_to(self._runs_dir.resolve())
+                                    )
+                                except ValueError:
+                                    job.result["translated_relative"] = resolved_path.name
+                            elif step == "polish":
+                                job.result["polished_path"] = str(resolved_path)
+                                try:
+                                    job.result["polished_relative"] = str(
+                                        resolved_path.relative_to(self._runs_dir.resolve())
+                                    )
+                                except ValueError:
+                                    job.result["polished_relative"] = resolved_path.name
                     self._save_state()
                 try:
                     progress_queue.put_nowait(ev)
@@ -431,6 +435,7 @@ class PipelineQueue:
             summary_url = None
             speakers_url = None
             translated_url = None
+            polished_url = None
             transcript_url = None
             input_audio_url = None
             speaker_audio_urls: list[str] = []
@@ -457,6 +462,12 @@ class PipelineQueue:
                 )
                 if translated_uploaded:
                     translated_url = translated_uploaded.url
+                polished_uploaded = self._s3_client.upload_file(
+                    str(result.polished_text_path),
+                    f"{run_prefix}/{result.polished_text_path.name}",
+                )
+                if polished_uploaded:
+                    polished_url = polished_uploaded.url
                 transcript_uploaded = self._s3_client.upload_file(
                     str(result.transcript_path),
                     f"{run_prefix}/{result.transcript_path.name}",
@@ -478,6 +489,7 @@ class PipelineQueue:
                         speaker_audio_urls.append(uploaded_path.url)
             job.result = {
                 "translated_path": str(result.translated_text_path),
+                "polished_path": str(result.polished_text_path),
                 "summary_path": str(result.summary_path),
                 "audio_path": str(result.audio_path),
                 "run_dir": str(result.run_dir),
@@ -494,6 +506,9 @@ class PipelineQueue:
                 "translated_relative": str(result.translated_text_path.resolve().relative_to(runs_dir))
                 if result.translated_text_path.resolve().is_relative_to(runs_dir)
                 else result.translated_text_path.name,
+                "polished_relative": str(result.polished_text_path.resolve().relative_to(runs_dir))
+                if result.polished_text_path.resolve().is_relative_to(runs_dir)
+                else result.polished_text_path.name,
                 "transcript_relative": str(result.transcript_path.resolve().relative_to(runs_dir))
                 if result.transcript_path.resolve().is_relative_to(runs_dir)
                 else result.transcript_path.name,
@@ -519,6 +534,7 @@ class PipelineQueue:
                 "audio_url": audio_url,
                 "speakers_url": speakers_url,
                 "translated_url": translated_url,
+                "polished_url": polished_url,
                 "transcript_url": transcript_url,
                 "input_audio_url": input_audio_url,
                 "speaker_audio_urls": speaker_audio_urls,
@@ -590,6 +606,7 @@ class PipelineQueue:
                     queue.remove(job_id)
             for running in self._running_by_user.values():
                 running.discard(job_id)
+            self._db.delete_job(job_id)
             self._save_state()
 
     def update_job_meta(

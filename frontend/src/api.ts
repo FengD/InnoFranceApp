@@ -158,6 +158,17 @@ export async function getJobTranslation(jobId: string): Promise<string> {
   return res.text();
 }
 
+export async function getJobPolish(jobId: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/pipeline/jobs/${jobId}/polished`, {
+    credentials: "include",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error((err as { detail?: string }).detail ?? "Request failed");
+  }
+  return res.text();
+}
+
 export async function updateJobSummary(
   jobId: string,
   text: string
@@ -173,6 +184,16 @@ export async function updateJobTranslation(
   text: string
 ): Promise<PipelineJob> {
   return request(`/api/pipeline/jobs/${jobId}/translated`, {
+    method: "POST",
+    body: JSON.stringify({ text }),
+  });
+}
+
+export async function updateJobPolish(
+  jobId: string,
+  text: string
+): Promise<PipelineJob> {
+  return request(`/api/pipeline/jobs/${jobId}/polished`, {
     method: "POST",
     body: JSON.stringify({ text }),
   });

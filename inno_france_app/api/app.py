@@ -262,6 +262,7 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         for key in (
             "summary_path",
             "translated_path",
+            "polished_path",
             "transcript_path",
             "speakers_path",
             "audio_path",
@@ -330,6 +331,18 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Translation not found")
         return translated_path, translated_path.read_text(encoding="utf-8")
 
+    def _polished_paths(job) -> tuple[Path, str]:
+        if job.result and job.result.get("polished_path"):
+            polished_path = Path(job.result["polished_path"])
+        else:
+            polished_path = _find_polished_from_steps(job)
+            if not polished_path:
+                translated_path, translated_text = _translated_paths(job)
+                return translated_path, translated_text
+        if not polished_path.exists():
+            raise HTTPException(status_code=404, detail="Polished text not found")
+        return polished_path, polished_path.read_text(encoding="utf-8")
+
     def _speakers_template(job) -> tuple[list[dict[str, Any]], list[str]]:
         if job.result and job.result.get("speakers_path"):
             speakers_path = Path(job.result["speakers_path"])
@@ -344,14 +357,25 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
                     return speakers, sorted(detected)
                 except json.JSONDecodeError:
                     pass
-        _, translated_text = _translated_paths(job)
-        speaker_lines = parse_speaker_lines(translated_text)
+        _, polished_text = _polished_paths(job)
+        speaker_lines = parse_speaker_lines(polished_text)
         detected_tags = sorted(speaker_lines.keys())
-        return build_speaker_configs(translated_text), detected_tags
+        return build_speaker_configs(polished_text), detected_tags
 
     def _find_translated_from_steps(job) -> Optional[Path]:
         for step in reversed(job.steps):
             if step.step == "translate" and step.detail:
+                for line in step.detail.splitlines():
+                    if line.strip().lower().startswith("file:"):
+                        rel = line.split(":", 1)[1].strip()
+                        candidate = (config.runs_dir / rel).resolve()
+                        if candidate.exists():
+                            return candidate
+        return None
+
+    def _find_polished_from_steps(job) -> Optional[Path]:
+        for step in reversed(job.steps):
+            if step.step == "polish" and step.detail:
                 for line in step.detail.splitlines():
                     if line.strip().lower().startswith("file:"):
                         rel = line.split(":", 1)[1].strip()
@@ -711,20 +735,18 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         if not job.result:
             raise HTTPException(status_code=400, detail="Job results not available")
         transcript_path_value = job.result.get("transcript_path")
-        translated_path_value = job.result.get("translated_path")
         run_dir_value = job.result.get("run_dir")
-        if not all([transcript_path_value, translated_path_value, run_dir_value]):
-            raise HTTPException(status_code=400, detail="Transcript/translation not available")
+        if not all([transcript_path_value, run_dir_value]):
+            raise HTTPException(status_code=400, detail="Transcript not available")
         clip_paths = job.result.get("speaker_audio_paths") or []
         if not clip_paths:
             raise HTTPException(status_code=400, detail="Speaker clips not available")
         transcript_path = Path(transcript_path_value)
-        translated_path = Path(translated_path_value)
         run_dir = Path(run_dir_value)
-        if not transcript_path.exists() or not translated_path.exists():
+        if not transcript_path.exists():
             raise HTTPException(status_code=404, detail="Required files not found")
 
-        translated_text = translated_path.read_text(encoding="utf-8").strip()
+        _, polished_text = _polished_paths(job)
 
         def emit(step: str, status: str, message: str, detail: Optional[str] = None) -> None:
             job.steps.append(StepEvent(step=step, status=status, message=message, detail=detail))
@@ -734,7 +756,7 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         speaker_client = MCPToolClient(config.services["speaker_detect"])
 
         clip_tags = job.result.get("speaker_audio_tags") or []
-        speaker_tags = clip_tags or _extract_speaker_tags(translated_text)
+        speaker_tags = clip_tags or _extract_speaker_tags(polished_text)
         if not speaker_tags:
             speaker_tags = ["SPEAKER0"]
         clips_with_tags: list[tuple[str, Path]] = []
@@ -1025,22 +1047,17 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         job = _get_job_or_404(job_id, user)
         if not job.result:
             raise HTTPException(status_code=400, detail="Job results not available")
-        translated_path_value = job.result.get("translated_path")
         run_dir_value = job.result.get("run_dir")
-        if not all([translated_path_value, run_dir_value]):
-            raise HTTPException(status_code=400, detail="Translation not available")
+        if not run_dir_value:
+            raise HTTPException(status_code=400, detail="Run directory not available")
         clip_paths = job.result.get("speaker_audio_paths") or []
         clip_tags = job.result.get("speaker_audio_tags") or []
         if not clip_paths:
             raise HTTPException(status_code=400, detail="Speaker clips not available")
-        translated_path = Path(translated_path_value)
         run_dir = Path(run_dir_value)
-        if not translated_path.exists():
-            raise HTTPException(status_code=404, detail="Required files not found")
-
-        translated_text = translated_path.read_text(encoding="utf-8").strip()
         if not clip_tags:
-            clip_tags = _extract_speaker_tags(translated_text) or ["SPEAKER0"]
+            _, polished_text = _polished_paths(job)
+            clip_tags = _extract_speaker_tags(polished_text) or ["SPEAKER0"]
 
         clip_path = None
         for index, path_value in enumerate(clip_paths):
@@ -1184,6 +1201,15 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         _, translated_text = _translated_paths(job)
         return PlainTextResponse(translated_text)
 
+    @app.get("/api/pipeline/jobs/{job_id}/polished")
+    def get_polished(
+        job_id: str,
+        user: UserRecord = Depends(_require_user),
+    ):
+        job = _get_job_or_404(job_id, user)
+        _, polished_text = _polished_paths(job)
+        return PlainTextResponse(polished_text)
+
     @app.post("/api/pipeline/jobs/{job_id}/translated", response_model=PipelineJobResponse)
     def update_translated(
         job_id: str,
@@ -1209,6 +1235,30 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
             **job.to_response(queue_position=queue.queue_position(user.user_id, job.job_id))
         )
 
+    @app.post("/api/pipeline/jobs/{job_id}/polished", response_model=PipelineJobResponse)
+    def update_polished(
+        job_id: str,
+        body: TranslationUpdateRequest,
+        user: UserRecord = Depends(_require_user),
+    ) -> PipelineJobResponse:
+        job = _get_job_or_404(job_id, user)
+        polished_path, _ = _polished_paths(job)
+        polished_path.write_text(body.text, encoding="utf-8")
+        polished_url = job.result.get("polished_url") if job.result else None
+        if s3_client.enabled:
+            run_prefix = None
+            if job.result and job.result.get("run_dir"):
+                run_prefix = Path(job.result["run_dir"]).name
+            key = f"{run_prefix}/{polished_path.name}" if run_prefix else polished_path.name
+            uploaded = s3_client.upload_file(str(polished_path), key)
+            if uploaded:
+                polished_url = uploaded.url
+        if polished_url is not None:
+            queue.update_job_result(job_id, {"polished_url": polished_url})
+        queue.save_state()
+        return PipelineJobResponse(
+            **job.to_response(queue_position=queue.queue_position(user.user_id, job.job_id))
+        )
     @app.post("/api/pipeline/jobs/{job_id}/summary-audio", response_model=PipelineJobResponse)
     async def generate_summary_audio(
         job_id: str,
@@ -1336,7 +1386,7 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         if not run_dir_value:
             raise HTTPException(status_code=400, detail="Run directory not available")
         run_dir = Path(run_dir_value)
-        _, translated_text = _translated_paths(job)
+        _, polished_text = _polished_paths(job)
 
         speakers = _parse_speaker_configs(body.speakers_json, config.settings.project_root)
         speakers_path = run_dir / "speakers.json"
@@ -1354,7 +1404,7 @@ def create_app(config_path: Optional[Path] = None) -> FastAPI:
         tts_result = await tts_client.call_tool(
             "clone_voice",
             {
-                "text": normalize_translation_text(translated_text),
+                "text": normalize_translation_text(polished_text),
                 "speaker_configs_json": json.dumps(speakers, ensure_ascii=False),
                 "speed": 1.0,
                 "output_path": str(audio_output_path),

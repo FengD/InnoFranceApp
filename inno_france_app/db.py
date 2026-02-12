@@ -60,6 +60,7 @@ class AppDatabase:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path.as_posix())
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON;")
         return conn
 
     def _init_schema(self) -> None:
@@ -388,6 +389,8 @@ class AppDatabase:
 
     def delete_job(self, job_id: str) -> None:
         with self._connect() as conn:
+            conn.execute("DELETE FROM pipeline_steps WHERE job_id = ?", (job_id,))
+            conn.execute("DELETE FROM queue_order WHERE job_id = ?", (job_id,))
             conn.execute("DELETE FROM pipeline_jobs WHERE job_id = ?", (job_id,))
 
     def load_jobs(self) -> list[dict[str, Any]]:

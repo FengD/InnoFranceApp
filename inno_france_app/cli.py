@@ -72,6 +72,7 @@ def main(
 
     click.echo("Completed.")
     click.echo(f"Summary: {result.summary_path}")
+    click.echo(f"Polish:  {result.polished_text_path}")
     click.echo(f"Audio:   {result.audio_path}")
     click.echo(f"Run dir: {result.run_dir}")
 

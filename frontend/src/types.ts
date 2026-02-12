@@ -8,6 +8,7 @@ export interface StepEvent {
 
 export interface PipelineResult {
   translated_path?: string;
+  polished_path?: string;
   summary_path: string;
   audio_path: string;
   run_dir: string;
@@ -19,6 +20,7 @@ export interface PipelineResult {
   summary_name: string;
   audio_name: string;
   translated_relative?: string;
+  polished_relative?: string;
   summary_relative: string;
   audio_relative: string;
   speakers_relative?: string;
@@ -29,6 +31,7 @@ export interface PipelineResult {
   audio_url?: string;
   speakers_url?: string;
   translated_url?: string;
+  polished_url?: string;
   transcript_url?: string;
   input_audio_url?: string;
   speaker_audio_urls?: string[];

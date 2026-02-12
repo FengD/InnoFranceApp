@@ -11,14 +11,14 @@ The app orchestrates multiple MCP services:
 
 - **InnoFranceYTAudioExtractor** — YouTube audio download
 - **InnoFranceASRService** — ASR and speaker diarization
-- **InnoFranceTranslateAGENT** — translation and summary
+- **InnoFranceTranslateAGENT** — translation, polish, and summary
 - **InnoFranceVoiceGenerateAgent** — TTS voice clone
 
 ## Features
 
 - **CLI**: Run a single pipeline from the command line.
 - **Web UI**: Start and monitor up to three pipelines from a browser. Pipelines are queued; one runs at a time by default, with an option to run up to three in parallel.
-- **Progress**: Per-pipeline step progress and optional detailed logs (audio source → transcription → translation → summary → speakers → TTS).
+- **Progress**: Per-pipeline step progress and optional detailed logs (audio source → transcription → translation → polish → summary → speakers → TTS).
 - **Artifacts**: Download and preview summary text and generated audio for completed runs.
 - **Auth**: Username/password login with optional WeChat SSO; pipelines are isolated per user.
 
@@ -82,9 +82,10 @@ InnoFranceApp/
 1. **Audio source** — Download from YouTube (MP3), upload local file, or fetch from audio URL.
 2. **Transcription** — ASR with speaker diarization; output saved as `transcript.json`.
 3. **Translation** — Translate transcript to Chinese with speaker tags; `translated.txt`.
-4. **Summary** — Generate Chinese summary; `summary.txt` in run directory.
-5. **Speakers** — Build speaker configs from translated text; `speakers.json`.
-6. **TTS** — Generate multi-speaker Chinese audio; `audio.wav` in run directory.
+4. **Polish** — Smooth translation for TTS; `polished.txt`.
+5. **Summary** — Generate Chinese summary; `summary.txt` in run directory.
+6. **Speakers** — Build speaker configs from polished text; `speakers.json`.
+7. **TTS** — Generate multi-speaker Chinese audio; `audio.wav` in run directory.
 
 Run directories use timestamp suffixes: `sp{n}_<base>_<yyyymmddhhmmss>`.
 
@@ -200,7 +201,7 @@ npm run dev
 
 - **Login**: Default user is `admin` / `admin`. You can also sign in with WeChat SSO if configured.
 - **New pipeline**: Choose source (YouTube URL, audio URL, or local upload), set provider/language/speed, then **Start pipeline**. Up to three pipelines can be queued or running; extra submissions are rejected until a slot is free.
-- **Manual speakers**: If enabled, the pipeline pauses after translation and waits for your speaker JSON. Translation text can be previewed/edited before submitting speakers.
+- **Manual speakers**: If enabled, the pipeline pauses after polish and waits for your speaker JSON. Polished text can be previewed/edited before submitting speakers.
 - **Settings**: Toggle **Allow parallel execution** and set **Max concurrent pipelines** (1–3). When parallel is off, only one pipeline runs at a time; others wait.
 - **Progress**: Each job shows status (Queued / Running / Completed / Failed), a step progress bar, and a **Show details** toggle for step-by-step logs.
 - **Completed jobs**: Use **Download** for summary `.txt` and audio `.wav`, and **Preview** to view text or play audio in the browser.
@@ -225,7 +226,9 @@ npm run dev
 | DELETE | `/api/pipeline/jobs/{job_id}` | Delete a job record (metadata only) |
 | GET | `/api/pipeline/jobs/{job_id}/stream` | SSE stream of step progress events |
 | GET | `/api/pipeline/jobs/{job_id}/translated` | Preview translated text |
-| PATCH | `/api/pipeline/jobs/{job_id}/translated` | Update translated text |
+| POST | `/api/pipeline/jobs/{job_id}/translated` | Update translated text |
+| GET | `/api/pipeline/jobs/{job_id}/polished` | Preview polished text |
+| POST | `/api/pipeline/jobs/{job_id}/polished` | Update polished text |
 | GET | `/api/artifacts/download?path=...` | Download file (path relative to output or runs dir) |
 | GET | `/api/artifacts/preview/summary?path=...` | Preview summary text |
 | GET | `/api/artifacts/preview/audio?path=...` | Preview audio (stream) |
@@ -236,6 +239,7 @@ npm run dev
   - `audio.mp3` (source)
   - `transcript.json`
   - `translated.txt`
+  - `polished.txt`
   - `summary.txt`
   - `speakers.json`
   - `audio.wav` (dialogue)

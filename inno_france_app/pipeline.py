@@ -25,6 +25,7 @@ PIPELINE_STEPS = (
     "youtube_audio",
     "asr",
     "translate",
+    "polish",
     "summary",
     "speakers",
     "tts",
@@ -37,6 +38,7 @@ class PipelineResult:
     audio_path: Path
     run_dir: Path
     translated_text_path: Path
+    polished_text_path: Path
     transcript_path: Path
     speakers_path: Path
     input_audio_path: Path
@@ -220,6 +222,30 @@ class InnoFrancePipeline:
             detail,
         )
 
+        _emit("polish", "running", "Polishing translated transcript", None)
+        polish_result = await translate_client.call_tool(
+            "translate_text",
+            {
+                "text": translated_text,
+                "provider": provider,
+                "model_name": model_name,
+                "prompt_type": "polish",
+                "api_key": provider_api_key,
+            },
+        )
+        _ensure_success(polish_result, "Polish failed")
+        polished_text = str(polish_result.get("result", "")).strip()
+
+        polished_text_path = run_dir / "polished.txt"
+        polished_text_path.write_text(polished_text, encoding="utf-8")
+        polish_detail = f"file: {_relative_to_runs(polished_text_path, runs_dir)}"
+        _emit(
+            "polish",
+            "completed",
+            "Polished transcript saved",
+            polish_detail,
+        )
+
         _emit("summary", "running", "Generating summary", None)
         summary_result = await translate_client.call_tool(
             "translate_text",
@@ -243,7 +269,7 @@ class InnoFrancePipeline:
             _relative_to_runs(summary_path, runs_dir),
         )
 
-        speaker_count = _count_speakers(translated_text)
+        speaker_count = _count_speakers(polished_text)
         speakers: list[dict[str, Any]]
         speaker_audio_paths: list[Path] = []
         speaker_clip_segments: dict[str, dict[str, Any]] = {}
@@ -252,7 +278,7 @@ class InnoFrancePipeline:
         if manual_speakers:
             if speaker_future is None:
                 raise RuntimeError("Manual speakers enabled but no input channel provided")
-            tag_list = ", ".join(_extract_speaker_tags(translated_text)) or "SPEAKER0"
+            tag_list = ", ".join(_extract_speaker_tags(polished_text)) or "SPEAKER0"
             _emit(
                 "speakers",
                 "waiting",
@@ -260,8 +286,8 @@ class InnoFrancePipeline:
                 f"{speaker_count} speakers detected: {tag_list}",
             )
             speakers_json = await speaker_future
-            if translated_text_path.exists():
-                translated_text = translated_text_path.read_text(encoding="utf-8").strip()
+            if polished_text_path.exists():
+                polished_text = polished_text_path.read_text(encoding="utf-8").strip()
             speakers = _parse_speaker_configs(speakers_json, self.config.settings.project_root)
             _emit("speakers", "running", "Using provided speaker configs", None)
         else:
@@ -274,7 +300,7 @@ class InnoFrancePipeline:
                 speaker_clip_candidates,
                 speaker_audio_tags,
             ) = await _detect_speaker_configs(
-                translated_text=translated_text,
+                translated_text=polished_text,
                 audio_path=audio_path,
                 run_dir=run_dir,
                 speaker_groups=speaker_groups,
@@ -284,12 +310,12 @@ class InnoFrancePipeline:
             )
             if not speakers:
                 _emit("speakers", "running", "Fallback to default speaker configs", None)
-                speakers = build_speaker_configs(translated_text)
+                speakers = build_speaker_configs(polished_text)
                 speaker_clip_segments = {}
                 speaker_clip_candidates = {}
-                speaker_audio_tags = _extract_speaker_tags(translated_text)
+                speaker_audio_tags = _extract_speaker_tags(polished_text)
         speaker_clip_selected = {
-            tag: 0 for tag in (speaker_audio_tags or _extract_speaker_tags(translated_text))
+            tag: 0 for tag in (speaker_audio_tags or _extract_speaker_tags(polished_text))
         }
         speakers_path = run_dir / "speakers.json"
         speakers_path.write_text(
@@ -303,7 +329,7 @@ class InnoFrancePipeline:
         )
 
         _emit("tts", "running", "Generating multi-speaker audio", None)
-        tts_text = normalize_translation_text(translated_text)
+        tts_text = normalize_translation_text(polished_text)
         audio_output_path = run_dir / "audio.wav"
         tts_result = await tts_client.call_tool(
             "clone_voice",
@@ -327,6 +353,7 @@ class InnoFrancePipeline:
             audio_path=audio_output_path,
             run_dir=run_dir,
             translated_text_path=translated_text_path,
+            polished_text_path=polished_text_path,
             transcript_path=transcript_path,
             speakers_path=speakers_path,
             input_audio_path=Path(audio_path),
